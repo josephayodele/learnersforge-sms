@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(NODE_OPTIONS=--use-system-ca vercel --prod)",
+      "Bash(python -c \"import sys,json;d=json.load\\(sys.stdin\\)['data'];print\\('total:',d['meta']['total']\\);print\\([s['first_name']+' '+s['last_name'] for s in d['students']][:5]\\)\")",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const d=JSON.parse\\(s\\).data;console.log\\(d.map\\(c=>c.name\\).join\\(', '\\)\\);}\\)\")",
+      "Bash(/c/xampp/mysql/bin/mysql -u root learnersforge_sms -e 'DELETE FROM classes WHERE name='\\\\''JSS 3C'\\\\'' AND school_id=1;')",
+      "Bash(/c/xampp/mysql/bin/mysql -u root learnersforge_sms -e 'SELECT COUNT\\(*\\) AS jss3c_left FROM classes WHERE name='\\\\''JSS 3C'\\\\'';')"
+    ]
+  }
+}

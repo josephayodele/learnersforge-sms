@@ -1,0 +1,25 @@
+# ── Dependencies / build caches ────────────────────────────────
+node_modules/
+**/node_modules/
+vendor/
+**/vendor/
+
+# ── Secrets / environment ──────────────────────────────────────
+.env
+.env.*
+!.env.*.example
+# Real DB credentials live only on the server; commit the .example instead.
+backend/config/database.php
+
+# ── Logs / OS cruft ────────────────────────────────────────────
+*.log
+.DS_Store
+Thumbs.db
+
+# ── The diverged/legacy backend (superseded by backend/) ───────
+learnersforge-backend/
+learnersforge-backend.zip
+
+# ── Editor ─────────────────────────────────────────────────────
+.vscode/
+.idea/

@@ -1,0 +1,29 @@
+---
+# cPanel "Git Version Control" deployment manifest.
+# cPanel runs these tasks when you click "Deploy HEAD Commit" (or on a pull).
+#
+# BEFORE FIRST DEPLOY:
+#   1. Replace CPANELUSER below with your cPanel account username
+#      (visible as /home/<username> in cPanel File Manager).
+#   2. In cPanel, create a subdomain e.g. api.yourdomain.com with its
+#      Document Root set to /home/CPANELUSER/api/public
+#   3. Create /home/CPANELUSER/api/config/database.php on the server
+#      (copy from backend/config/database.php.example, fill real DB creds).
+#      It is intentionally NOT deployed, so credentials stay off git.
+deployment:
+  tasks:
+    - export CPUSER=CPANELUSER
+
+    # ── Frontend: built static site → main domain document root ──
+    - export WEBROOT=/home/$CPUSER/public_html
+    - /bin/cp -R learnersforge/dist/. $WEBROOT/
+
+    # ── Backend API → /home/$CPUSER/api  (api subdomain docroot = api/public) ──
+    - export APIROOT=/home/$CPUSER/api
+    - /bin/mkdir -p $APIROOT
+    - /bin/cp -R backend/app $APIROOT/
+    - /bin/cp -R backend/database $APIROOT/
+    - /bin/cp -R backend/public $APIROOT/
+    # config/ carries only database.php.example; the real database.php is created
+    # once on the server (see step 3 above) and is never overwritten by a deploy.
+    - /bin/cp -R backend/config $APIROOT/
