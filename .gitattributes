@@ -1,0 +1,8 @@
+# Files executed/served on the Linux server must use LF line endings,
+# regardless of the committer's OS.
+*.yml       text eol=lf
+.cpanel.yml text eol=lf
+.htaccess   text eol=lf
+*.php       text eol=lf
+*.sql       text eol=lf
+*.sh        text eol=lf
