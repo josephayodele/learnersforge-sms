@@ -7,7 +7,13 @@ error_reporting(E_ALL);
 ini_set('display_errors', '0');
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-$allowed_origins = ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000'];
+// Add the exact origin(s) the frontend is served from. The API lives at
+// api.sjacedu.ng; the browser app calling it must be listed here or the request
+// is blocked (credentials are allowed, so wildcard '*' cannot be used).
+$allowed_origins = [
+    'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000',
+    'https://sjacedu.ng', 'https://www.sjacedu.ng',
+];
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 if (in_array($origin, $allowed_origins, true)) {
     header("Access-Control-Allow-Origin: $origin");

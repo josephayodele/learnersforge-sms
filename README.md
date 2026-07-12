@@ -37,26 +37,35 @@ backend/database/migrations/005_remark_ranges_class.sql
 backend/database/seeders/002_demo_data.sql   (optional demo data)
 ```
 
-## Deploying to cPanel (GitHub → cPanel Git Version Control)
+## Deploying to Bluehost cPanel — API at `api.sjacedu.ng`
 
-1. **Push this repo to GitHub** (see below).
-2. **cPanel → Git™ Version Control → Create**, paste the repo's SSH URL.
-   For a private repo, copy the SSH key cPanel shows into the GitHub repo's
-   **Settings → Deploy keys** (read access is enough), then Pull.
-3. **Create the database** in cPanel (MySQL Databases), import the migrations,
-   and create `/home/<user>/api/config/database.php` with the real credentials.
-4. **Create an `api` subdomain** with document root `/home/<user>/api/public`.
-5. **Set the production API base and rebuild the frontend** before each deploy:
-   ```bash
-   cd learnersforge
-   echo "VITE_API_BASE=https://api.yourdomain.com/api/v1" > .env.production
-   npm run build
-   ```
-   Commit the updated `learnersforge/dist/` (the deploy copies it to the web root).
-6. Edit `.cpanel.yml` — replace `CPANELUSER` with your account name — then
-   **Deploy HEAD Commit** in cPanel.
+Repo: `https://github.com/josephayodele/learnersforge-sms.git`
+
+1. **cPanel → Git™ Version Control → Create.** Paste the repo URL. For a private
+   repo, copy the SSH key cPanel shows into the GitHub repo's
+   **Settings → Deploy keys** (read access is enough), then **Update from Remote**.
+2. **cPanel → Domains → create subdomain** `api.sjacedu.ng` with Document Root
+   `/home/CPANELUSER/learnersforge-api/public`.
+3. **cPanel → MultiPHP Manager:** set `api.sjacedu.ng` to **PHP 8.x**.
+4. **cPanel → MySQL Databases:** create a database + user, then import the SQL in
+   `backend/database/migrations` (`001`,`003`,`004`,`005`) and optionally
+   `seeders/002_demo_data.sql` (via phpMyAdmin).
+5. **Create `/home/CPANELUSER/learnersforge-api/config/database.php`** on the
+   server from `backend/config/database.php.example` with the real DB credentials.
+   (It's git-ignored and never overwritten by a deploy.)
+6. **Edit `.cpanel.yml`** — replace `CPANELUSER` with your Bluehost username
+   (confirm the `/home/...` path in File Manager) — then **Deploy HEAD Commit**.
+7. Browse `https://api.sjacedu.ng/api/v1/classes` — you should get JSON.
+
+### Frontend
+The build already targets `https://api.sjacedu.ng/api/v1` (baked into
+`learnersforge/dist`). Host the built site wherever the app lives (e.g.
+`sjacedu.ng`) — its origin must be in the API's CORS allowlist in
+`backend/public/index.php` (currently `sjacedu.ng` and `www.sjacedu.ng`).
+To retarget the API, edit `learnersforge/.env.production`, run `npm run build`,
+and commit `learnersforge/dist/`.
 
 ### How cPanel talks to GitHub
-cPanel does **not** log into your GitHub account. It clones the repo over SSH
-using a **deploy key** you add to the repo, and pulls on demand (or via a webhook
-you configure). Pushing is always done from your machine.
+cPanel does **not** log into your GitHub account. It clones the repo using a
+**deploy key** you add to the repo, and pulls on demand (or via a webhook you
+configure). Pushing is always done from your machine.

@@ -1,29 +1,34 @@
 ---
-# cPanel "Git Version Control" deployment manifest.
-# cPanel runs these tasks when you click "Deploy HEAD Commit" (or on a pull).
+# cPanel "Git Version Control" deployment manifest (Bluehost).
+# cPanel runs these tasks when you click "Deploy HEAD Commit".
 #
 # BEFORE FIRST DEPLOY:
-#   1. Replace CPANELUSER below with your cPanel account username
-#      (visible as /home/<username> in cPanel File Manager).
-#   2. In cPanel, create a subdomain e.g. api.yourdomain.com with its
-#      Document Root set to /home/CPANELUSER/api/public
-#   3. Create /home/CPANELUSER/api/config/database.php on the server
-#      (copy from backend/config/database.php.example, fill real DB creds).
-#      It is intentionally NOT deployed, so credentials stay off git.
+#   1. Replace CPANELUSER with your Bluehost account username.
+#      Check the exact home path in cPanel File Manager — Bluehost is usually
+#      /home/CPANELUSER (sometimes /home1/, /home2/…). Fix the paths below to match.
+#   2. In cPanel → Domains → create subdomain  api.sjacedu.ng  and set its
+#      Document Root to:  /home/CPANELUSER/learnersforge-api/public
+#   3. Create /home/CPANELUSER/learnersforge-api/config/database.php on the server
+#      (copy backend/config/database.php.example, fill real DB creds). It is NOT
+#      deployed, so credentials never touch git and a deploy won't overwrite it.
+#   4. cPanel → MultiPHP Manager → set api.sjacedu.ng (and main domain) to PHP 8.x.
 deployment:
   tasks:
     - export CPUSER=CPANELUSER
 
-    # ── Frontend: built static site → main domain document root ──
-    - export WEBROOT=/home/$CPUSER/public_html
-    - /bin/cp -R learnersforge/dist/. $WEBROOT/
-
-    # ── Backend API → /home/$CPUSER/api  (api subdomain docroot = api/public) ──
-    - export APIROOT=/home/$CPUSER/api
+    # ── Backend API → api.sjacedu.ng (docroot = learnersforge-api/public) ──
+    - export APIROOT=/home/$CPUSER/learnersforge-api
     - /bin/mkdir -p $APIROOT
     - /bin/cp -R backend/app $APIROOT/
     - /bin/cp -R backend/database $APIROOT/
     - /bin/cp -R backend/public $APIROOT/
     # config/ carries only database.php.example; the real database.php is created
-    # once on the server (see step 3 above) and is never overwritten by a deploy.
-    - /bin/cp -R backend/config $APIROOT/
+    # once on the server (step 3) and is intentionally never overwritten.
+    - /bin/cp -Rn backend/config $APIROOT/
+
+    # ── Frontend (OPTIONAL) → main domain sjacedu.ng ──
+    # Uncomment to also deploy the built React site to public_html.
+    # WARNING: this copies over public_html — make sure that's the app's home
+    # and won't clobber an existing site.
+    # - export WEBROOT=/home/$CPUSER/public_html
+    # - /bin/cp -R learnersforge/dist/. $WEBROOT/
