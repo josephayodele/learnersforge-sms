@@ -14,7 +14,7 @@
 #   4. cPanel → MultiPHP Manager → set api.sjacedu.ng (and main domain) to PHP 8.x.
 deployment:
   tasks:
-    - export CPUSER=CPANELUSER
+    - export CPUSER=rgabfmmy
 
     # ── Backend API → api.sjacedu.ng (docroot = learnersforge-api/public) ──
     - export APIROOT=/home/$CPUSER/learnersforge-api
