@@ -4,8 +4,8 @@ class DashboardController {
     public static function index(array $user): void {
         $sid = (int)$user['school_id'];
         $data = [
-            'total_students'   => (int)(DB::one('SELECT COUNT(*) c FROM students s JOIN users u ON u.id=s.user_id WHERE u.school_id=?',[$sid])['c']??0),
-            'total_staff'      => (int)(DB::one('SELECT COUNT(*) c FROM staff s JOIN users u ON u.id=s.user_id WHERE u.school_id=?',[$sid])['c']??0),
+            'total_students'   => (int)(DB::one('SELECT COUNT(*) c FROM students s JOIN users u ON u.id=s.user_id WHERE u.school_id=? AND s.deleted_at IS NULL AND u.deleted_at IS NULL',[$sid])['c']??0),
+            'total_staff'      => (int)(DB::one('SELECT COUNT(*) c FROM staff s JOIN users u ON u.id=s.user_id WHERE u.school_id=? AND s.deleted_at IS NULL AND u.deleted_at IS NULL',[$sid])['c']??0),
             'fees_collected'   => (float)(DB::one('SELECT COALESCE(SUM(p.amount),0) t FROM payments p JOIN invoices i ON i.id=p.invoice_id JOIN students st ON st.id=i.student_id JOIN users u ON u.id=st.user_id WHERE u.school_id=?',[$sid])['t']??0),
             'fees_outstanding' => (float)(DB::one('SELECT COALESCE(SUM(i.balance),0) t FROM invoices i JOIN students st ON st.id=i.student_id JOIN users u ON u.id=st.user_id WHERE u.school_id=? AND i.status != "paid"',[$sid])['t']??0),
             'today_present'    => (int)(DB::one('SELECT COUNT(*) c FROM attendance WHERE status="present" AND date=CURDATE()',[]  )['c']??0),
@@ -276,6 +276,23 @@ class StaffController {
             self::applyAssignments($sid, (int)$st['user_id'], body());
             DB::conn()->commit();
             respond(['saved' => true]);
+        } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
+    }
+
+    public static function destroy(array $user, int $id): void {
+        if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can delete staff.');
+        $sid = (int)$user['school_id'];
+        $st = DB::one('SELECT s.user_id FROM staff s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=? AND s.deleted_at IS NULL', [$id, $sid]);
+        if (!$st) respond(null, 404, 'Staff not found');
+        $uid = (int)$st['user_id'];
+        DB::conn()->beginTransaction();
+        try {
+            DB::run('UPDATE classes SET form_teacher_id=NULL WHERE school_id=? AND form_teacher_id=?', [$sid, $uid]);
+            DB::run('UPDATE class_subjects cs JOIN classes c ON c.id=cs.class_id SET cs.teacher_id=NULL WHERE c.school_id=? AND cs.teacher_id=?', [$sid, $uid]);
+            DB::run('UPDATE staff SET deleted_at=NOW() WHERE id=?', [$id]);
+            DB::run('UPDATE users SET deleted_at=NOW() WHERE id=?', [$uid]);
+            DB::conn()->commit();
+            respond(['deleted' => true]);
         } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
     }
 

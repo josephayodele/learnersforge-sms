@@ -142,6 +142,9 @@ try {
     } elseif ($path === '/api/v1/staff' && $id && $method === 'GET') {
         StaffController::show(authGuard(), $id);
 
+    } elseif ($path === '/api/v1/staff' && $id && $method === 'DELETE') {
+        StaffController::destroy(authGuard(), $id);
+
     // ── Attendance ────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/attendance' && $method === 'GET') {
         AttendanceController::index(authGuard());
