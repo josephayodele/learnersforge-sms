@@ -29,7 +29,9 @@ deployment:
     - /bin/echo "== Docroot now contains: =="
     - /bin/ls -la "$HOME/learnersforge-api/public"
 
-    # ── Frontend (OPTIONAL) → main domain sjacedu.ng ──
-    # Uncomment to also deploy the built React site to public_html.
-    # WARNING: this overwrites files in public_html — only if that's the app's home.
-    # - /bin/cp -R learnersforge/dist/. "$HOME/public_html/"
+    # ── Frontend (React build) → portal.sjacedu.ng ──
+    # Create subdomain portal.sjacedu.ng with Document Root: <HOME>/portal-app
+    - /bin/echo "== Deploying frontend to $HOME/portal-app =="
+    - /bin/mkdir -p "$HOME/portal-app"
+    - /bin/cp -R learnersforge/dist/. "$HOME/portal-app/"
+    - /bin/ls -la "$HOME/portal-app"
