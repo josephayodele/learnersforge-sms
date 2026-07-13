@@ -64,6 +64,7 @@ export const getStaffMember = id => api.get(`/staff/${id}`);
 export const createStaff = data => api.post('/staff', data);
 export const getStaffAssignments  = id => api.get(`/staff/${id}/assignments`);
 export const saveStaffAssignments = (id, data) => api.post(`/staff/${id}/assignments`, data);
+export const deleteStaff = id => api.delete(`/staff/${id}`);
 
 // ── Attendance ────────────────────────────────────────────────────────────────
 export const getAttendance    = (class_id, date, term_id = 2) =>

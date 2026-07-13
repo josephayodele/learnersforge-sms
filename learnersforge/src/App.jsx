@@ -4,7 +4,7 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          getCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
-         getStaff, createStaff, getStaffAssignments, saveStaffAssignments, login as apiLogin } from "./api/client";
+         getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -3526,8 +3526,18 @@ const Staff = () => {
   const [reloadKey,setReloadKey]=useState(0);
   const [showAdd,setShowAdd]=useState(false);
   const [assignFor,setAssignFor]=useState(null);
+  const [del,setDel]=useState(null);          // staff pending delete
+  const [deleting,setDeleting]=useState(false);
   const [toast,setToast]=useState("");
   const flash=msg=>{ setToast(msg); setTimeout(()=>setToast(""),2600); };
+
+  const confirmDelete=async()=>{
+    if(!del) return;
+    setDeleting(true);
+    try{ await deleteStaff(del.id); flash("Staff deleted."); setDel(null); setReloadKey(k=>k+1); }
+    catch(err){ flash(err?.message || "Delete failed."); }
+    finally{ setDeleting(false); }
+  };
 
   useEffect(()=>{
     getClasses().then(r=>setClasses(arrOf(r).map(c=>({...c,id:Number(c.id)})))).catch(()=>{});
@@ -3560,6 +3570,17 @@ const Staff = () => {
         onClose={()=>setShowAdd(false)} onSaved={()=>{ setShowAdd(false); flash("Staff created."); setReloadKey(k=>k+1); }}/>}
       {assignFor && <AssignStaffModal staff={assignFor} classes={classes} subjects={subjects}
         onClose={()=>setAssignFor(null)} onSaved={()=>{ setAssignFor(null); flash("Assignments saved."); }}/>}
+      {del && (
+        <Modal title="Delete staff?" onClose={deleting?()=>{}:()=>setDel(null)} width={440}>
+          <div style={{fontSize:13,color:C.textMid,lineHeight:1.6}}>
+            You're about to delete <strong>{del.name}</strong>. They will be removed from active staff, and their class‑teacher and subject‑teaching assignments will be released. This cannot be undone from here.
+          </div>
+          <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:20}}>
+            <Btn variant="secondary" onClick={()=>setDel(null)} disabled={deleting}>Cancel</Btn>
+            <Btn variant="danger" onClick={confirmDelete} disabled={deleting}>{deleting?"Deleting…":"Delete staff"}</Btn>
+          </div>
+        </Modal>
+      )}
       {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600,boxShadow:"0 8px 28px rgba(0,0,0,.2)",borderLeft:`4px solid ${C.accent}`}}>{toast}</div>}
       {loading ? (
         <Card><div style={{padding:"50px",textAlign:"center",fontSize:12,color:C.textMuted}}>Loading staff…</div></Card>
@@ -3576,7 +3597,10 @@ const Staff = () => {
                 <div style={{ fontSize:13, fontWeight:700 }}>{s.name}</div>
                 <div style={{ fontSize:11, color:C.textMuted }}>{[s.designation,s.department].filter(Boolean).join(" · ")||s.staff_id}</div>
               </div>
-              <Btn size="sm" variant="secondary" onClick={()=>setAssignFor(s)}>Assign</Btn>
+              <div style={{display:"flex",gap:6,flexShrink:0}}>
+                <Btn size="sm" variant="secondary" onClick={()=>setAssignFor(s)}>Assign</Btn>
+                <Btn size="sm" variant="danger" onClick={()=>setDel(s)}>Delete</Btn>
+              </div>
             </Card>
           ))}
         </div>
