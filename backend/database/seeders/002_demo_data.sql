@@ -186,7 +186,7 @@ INSERT INTO `attendance` (`student_id`,`class_id`,`term_id`,`date`,`status`,`com
 (1,5,2,'2026-05-20','present',NULL,2,'qr'),
 (2,10,2,'2026-05-20','present',NULL,3,'qr'),
 (5,4,2,'2026-05-20','present',NULL,5,'qr'),
-(1,5,2,'2026-05-21','early-dismissal','Parent emergency','12:30:00',2,'manual'),
+(1,5,2,'2026-05-21','early-dismissal','Parent emergency (dismissed 12:30)',2,'manual'),
 (2,10,2,'2026-05-21','present',NULL,3,'manual'),
 (5,4,2,'2026-05-21','present',NULL,5,'manual'),
 (1,5,2,'2026-05-22','present',NULL,2,'biometric'),
