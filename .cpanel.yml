@@ -1,34 +1,35 @@
 ---
-# cPanel "Git Version Control" deployment manifest — Bluehost, user rgabfmmy.
+# cPanel "Git Version Control" deployment manifest — Bluehost (user rgabfmmy).
+# $HOME resolves to the account home (e.g. /home1/rgabfmmy), so paths are portable.
 #
 # IMPORTANT: files are ONLY copied when you click "Deploy HEAD Commit" in
 #   cPanel → Git Version Control → Manage → Pull or Deploy.
 #   Cloning / "Update from Remote" alone does NOT run these tasks.
 #
 # ONE-TIME SERVER SETUP:
-#   1. Subdomain api.sjacedu.ng  →  Document Root: /home/rgabfmmy/learnersforge-api/public
+#   1. Subdomain api.sjacedu.ng  →  Document Root: <HOME>/learnersforge-api/public
 #   2. MultiPHP Manager → set api.sjacedu.ng to PHP 8.x
-#   3. Create /home/rgabfmmy/learnersforge-api/config/database.php from
+#   3. Create <HOME>/learnersforge-api/config/database.php from
 #      config/database.php.example with the real DB credentials (git-ignored,
 #      never overwritten by a deploy).
 deployment:
   tasks:
-    - /bin/echo "== Deploying LearnersForge API =="
-    - /bin/mkdir -p /home/rgabfmmy/learnersforge-api/app
-    - /bin/mkdir -p /home/rgabfmmy/learnersforge-api/database
-    - /bin/mkdir -p /home/rgabfmmy/learnersforge-api/public
-    - /bin/mkdir -p /home/rgabfmmy/learnersforge-api/config
-    # Copy directory CONTENTS (the trailing /. includes hidden files like .htaccess
-    # and avoids nesting public inside the existing public docroot).
-    - /bin/cp -R backend/app/.      /home/rgabfmmy/learnersforge-api/app/
-    - /bin/cp -R backend/database/. /home/rgabfmmy/learnersforge-api/database/
-    - /bin/cp -R backend/public/.   /home/rgabfmmy/learnersforge-api/public/
+    - /bin/echo "== Deploying LearnersForge API to $HOME/learnersforge-api =="
+    - /bin/mkdir -p "$HOME/learnersforge-api/app"
+    - /bin/mkdir -p "$HOME/learnersforge-api/database"
+    - /bin/mkdir -p "$HOME/learnersforge-api/public"
+    - /bin/mkdir -p "$HOME/learnersforge-api/config"
+    # Copy directory CONTENTS (trailing /. includes hidden files like .htaccess and
+    # avoids nesting public inside the existing public docroot).
+    - /bin/cp -R backend/app/.      "$HOME/learnersforge-api/app/"
+    - /bin/cp -R backend/database/. "$HOME/learnersforge-api/database/"
+    - /bin/cp -R backend/public/.   "$HOME/learnersforge-api/public/"
     # -n = no-clobber: ships database.php.example without overwriting your real config.
-    - /bin/cp -Rn backend/config/.  /home/rgabfmmy/learnersforge-api/config/
+    - /bin/cp -Rn backend/config/.  "$HOME/learnersforge-api/config/"
     - /bin/echo "== Docroot now contains: =="
-    - /bin/ls -la /home/rgabfmmy/learnersforge-api/public
+    - /bin/ls -la "$HOME/learnersforge-api/public"
 
     # ── Frontend (OPTIONAL) → main domain sjacedu.ng ──
     # Uncomment to also deploy the built React site to public_html.
     # WARNING: this overwrites files in public_html — only if that's the app's home.
-    # - /bin/cp -R learnersforge/dist/. /home/rgabfmmy/public_html/
+    # - /bin/cp -R learnersforge/dist/. "$HOME/public_html/"
