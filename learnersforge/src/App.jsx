@@ -218,13 +218,15 @@ const NAV=[
 ];
 const GROUPS={main:"Main",academic:"Academics",exams:"Examinations",ai:"AI Tools",admin:"Administration",enroll:"Enrollment",ops:"Operations",learning:"Learning"};
 
-const Sidebar = ({active,onNav,collapsed,setCollapsed}) => {
+const Sidebar = ({active,onNav,collapsed,setCollapsed,school}) => {
   const groups=[...new Set(NAV.map(n=>n.group))];
   return (
     <aside className="no-print" style={{width:collapsed?64:C.sidebarW,minHeight:"100vh",background:C.navy,display:"flex",flexDirection:"column",transition:"width .25s",flexShrink:0,position:"sticky",top:0,height:"100vh",overflowY:"auto",overflowX:"hidden"}}>
       <div style={{padding:"18px 14px 14px",display:"flex",alignItems:"center",gap:10,borderBottom:`1px solid ${C.navyLight}`}}>
-        <div style={{width:32,height:32,borderRadius:9,background:C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>⚡</div>
-        {!collapsed&&<span style={{color:"#fff",fontWeight:700,fontSize:15,letterSpacing:"-.3px"}}>LearnersForge</span>}
+        <div style={{width:32,height:32,borderRadius:9,background:school?.logo_url?"#fff":C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0,overflow:"hidden"}}>
+          {school?.logo_url ? <img src={school.logo_url} alt="" style={{width:"100%",height:"100%",objectFit:"contain"}}/> : "⚡"}
+        </div>
+        {!collapsed&&<span style={{color:"#fff",fontWeight:700,fontSize:15,letterSpacing:"-.3px"}}>{school?.name || "LearnersForge"}</span>}
       </div>
       <nav style={{flex:1,padding:"10px 8px"}}>
         {groups.map(g=>{
@@ -256,7 +258,7 @@ const Sidebar = ({active,onNav,collapsed,setCollapsed}) => {
 
 // ── Topbar ────────────────────────────────────────────────────────────────────
 const TITLES={dashboard:"Dashboard",students:"Student Management",staff:"Staff Management",attendance:"Attendance",grades:"Grades & Report Cards",timetable:"Timetable",cbt:"CBT Exams","cbt-create":"Create Exam","cbt-take":"Take Exam","ai-tools":"AI Teaching Tools",fees:"Fees & Finance",messaging:"Messaging",hostel:"Hostel Management",inventory:"Inventory",library:"Library Management",settings:"Settings","admissions":"Admissions & Enrollment","academic-mgmt":"Academic Management","student-extras":"Student Records","transport":"Transport Management","certificates":"Certificates & ID Cards","multi-branch":"Multi-Branch Management","cms":"Website & CMS","hr":"HR Module","online-learning":"Online Learning","communications":"Communications","analytics":"Reports & Analytics"};
-const Topbar = ({page,onNav,onLogout}) => (
+const Topbar = ({page,onNav,onLogout,school}) => (
   <header className="no-print" style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"0 24px",height:60,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10}}>
     <div>
       <h1 style={{fontSize:16,fontWeight:700,color:C.text,margin:0}}>{TITLES[page]||page}</h1>
@@ -270,7 +272,7 @@ const Topbar = ({page,onNav,onLogout}) => (
         <Avatar initials="SA" size={30} color={C.accent}/>
         <div style={{lineHeight:1.3}}>
           <div style={{fontSize:12,fontWeight:600}}>Super Admin</div>
-          <div style={{fontSize:10,color:C.textMuted}}>Greenfield Academy</div>
+          <div style={{fontSize:10,color:C.textMuted}}>{school?.name || "—"}</div>
         </div>
       </div>
       <button onClick={onLogout} title="Log out" style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 11px",fontSize:12,color:C.textMid,cursor:"pointer",fontFamily:"Sora,sans-serif"}} onMouseEnter={e=>{e.currentTarget.style.background=C.coralLight;e.currentTarget.style.color=C.coral;e.currentTarget.style.borderColor=C.coral+"55";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=C.textMid;e.currentTarget.style.borderColor=C.border;}}>↪ Logout</button>
@@ -3638,6 +3640,7 @@ const Settings = () => {
     try {
       const res = await updateSchoolSettings(form);
       setForm({ ...empty, ...(res?.data ?? form) });
+      window.dispatchEvent(new Event('lf-school-updated'));   // refresh sidebar/topbar name + logo
       setSaved(true); setTimeout(() => setSaved(false), 2500);
     } catch (err) {
       setError(err?.message || err?.data?.error || "Failed to save settings.");
@@ -5318,12 +5321,22 @@ export default function App() {
   const [authed, setAuthed] = useState(() => !!localStorage.getItem('lf_token'));
   const [page,      setPage]      = useState("dashboard");
   const [collapsed, setCollapsed] = useState(false);
+  const [school,    setSchool]    = useState(null);   // school name + logo for the app chrome
 
   useEffect(() => {
     const onUnauth = () => setAuthed(false);
     window.addEventListener('lf-unauthorized', onUnauth);
     return () => window.removeEventListener('lf-unauthorized', onUnauth);
   }, []);
+
+  // Load the school's name/logo once signed in (refreshes when settings change via 'lf-school-updated').
+  useEffect(() => {
+    if (!authed) return;
+    const load = () => getSchoolSettings().then(r => setSchool(r?.data ?? r)).catch(() => {});
+    load();
+    window.addEventListener('lf-school-updated', load);
+    return () => window.removeEventListener('lf-school-updated', load);
+  }, [authed]);
 
   const handleLogout = () => {
     localStorage.removeItem('lf_token');
@@ -5368,9 +5381,9 @@ export default function App() {
     <>
       <style>{G}</style>
       <div style={{ display:"flex", minHeight:"100vh" }}>
-        <Sidebar active={page} onNav={setPage} collapsed={collapsed} setCollapsed={setCollapsed}/>
+        <Sidebar active={page} onNav={setPage} collapsed={collapsed} setCollapsed={setCollapsed} school={school}/>
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
-          <Topbar page={page} onNav={setPage} onLogout={handleLogout}/>
+          <Topbar page={page} onNav={setPage} onLogout={handleLogout} school={school}/>
           <main style={{ flex:1, padding:22, overflowY:"auto" }}>
             {PAGES[page] || <Dashboard onNav={setPage}/>}
           </main>
