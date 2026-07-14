@@ -1222,16 +1222,21 @@ class AIController {
             'max_tokens'  => isset($b['max_tokens']) ? min(8000, max(1, (int)$b['max_tokens'])) : 2048,
         ];
 
+        $headers = [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $cfg['api_key'],
+        ];
+        // OpenRouter attribution headers (optional; ignored by other providers).
+        if (!empty($cfg['referer'])) $headers[] = 'HTTP-Referer: ' . $cfg['referer'];
+        if (!empty($cfg['title']))   $headers[] = 'X-Title: ' . $cfg['title'];
+
         $url = rtrim($cfg['base_url'], '/') . '/chat/completions';
         $ch  = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST           => true,
             CURLOPT_POSTFIELDS     => json_encode($payload),
-            CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $cfg['api_key'],
-            ],
+            CURLOPT_HTTPHEADER     => $headers,
             CURLOPT_TIMEOUT        => (int)($cfg['timeout'] ?? 60),
             CURLOPT_CONNECTTIMEOUT => 15,
         ]);

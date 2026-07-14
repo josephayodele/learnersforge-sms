@@ -1,11 +1,24 @@
 <?php
-// config/ai.php  — z.ai (Zhipu GLM) credentials for the AI features.
+// config/ai.php  — LLM provider credentials for the AI features.
 // Copy this file to config/ai.php on the server and fill in the real API key.
 // The real config/ai.php is git-ignored and is never overwritten by a deploy.
+//
+// The proxy speaks the OpenAI-compatible /chat/completions format, so you can
+// point it at almost any provider by changing base_url + api_key + model:
+//   OpenRouter : https://openrouter.ai/api/v1   (recommended — one key, any model)
+//   OpenAI     : https://api.openai.com/v1
+//   z.ai (GLM) : https://api.z.ai/api/paas/v4
+//   Groq       : https://api.groq.com/openai/v1
+//   Ollama     : http://localhost:11434/v1
 return [
-    'provider' => 'zai',
-    'base_url' => 'https://api.z.ai/api/paas/v4',
-    'api_key'  => 'YOUR_ZAI_API_KEY_HERE',   // format: <id>.<secret>
-    'model'    => 'glm-4.6',                  // default model; requests may override
-    'timeout'  => 60,                         // seconds
+    'provider' => 'openrouter',
+    'base_url' => 'https://openrouter.ai/api/v1',
+    'api_key'  => 'YOUR_OPENROUTER_API_KEY_HERE',   // starts with sk-or-...
+    // Change this string any time to switch models — see https://openrouter.ai/models
+    'model'    => 'openai/gpt-4o-mini',
+    'timeout'  => 60,
+
+    // Optional OpenRouter attribution (shows up on your OpenRouter dashboard):
+    'referer'  => 'https://portal.sjacedu.ng',
+    'title'    => 'LearnersForge SMS',
 ];
