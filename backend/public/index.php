@@ -250,6 +250,21 @@ try {
     } elseif (preg_match('#^/api/v1/exams/(\d+)/questions$#', $path, $mex) && $method === 'POST') {
         ExamController::addQuestions(authGuard(), (int)$mex[1]);
 
+    // ── Student portal (exam taking) ────────────────────────────────────────────
+    // Note: the router strips a trailing numeric id, so /my/exams/5 arrives as
+    // path=/api/v1/my/exams with $id=5.
+    } elseif ($path === '/api/v1/my/exams' && !$id && $method === 'GET') {
+        StudentPortalController::myExams(authGuard());
+
+    } elseif ($path === '/api/v1/my/exams' && $id && $method === 'GET') {
+        StudentPortalController::takeExam(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/my/results' && $method === 'GET') {
+        StudentPortalController::myResults(authGuard());
+
+    } elseif ($path === '/api/v1/my/exam-submit' && $method === 'POST') {
+        StudentPortalController::submitExam(authGuard());
+
     // ── Inventory ─────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/inventory' && $method === 'GET') {
         InventoryController::index(authGuard());

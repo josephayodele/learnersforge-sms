@@ -966,8 +966,8 @@ class ExamController {
 
     public static function store(array $user): void {
         $b = body();
-        $id = DB::exec('INSERT INTO exams (school_id,class_id,subject_id,term_id,title,exam_type,duration,total_marks,pass_mark,status,shuffle_q,shuffle_opts,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            [(int)$user['school_id'],(int)$b['class_id'],(int)$b['subject_id'],(int)$b['term_id'],$b['title'],$b['exam_type']??'mid-term',(int)($b['duration']??60),(int)($b['total_marks']??100),(int)($b['pass_mark']??50),$b['status']??'draft',(int)($b['shuffle_q']??1),(int)($b['shuffle_opts']??1),(int)$user['id']]);
+        $id = DB::exec('INSERT INTO exams (school_id,class_id,subject_id,term_id,title,exam_type,duration,total_marks,pass_mark,status,shuffle_q,shuffle_opts,show_score,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            [(int)$user['school_id'],(int)$b['class_id'],(int)$b['subject_id'],(int)$b['term_id'],$b['title'],$b['exam_type']??'mid-term',(int)($b['duration']??60),(int)($b['total_marks']??100),(int)($b['pass_mark']??50),$b['status']??'draft',(int)($b['shuffle_q']??1),(int)($b['shuffle_opts']??1),(int)($b['show_score']??0),(int)$user['id']]);
         if (!empty($b['questions'])) {
             foreach ($b['questions'] as $i=>$q) {
                 DB::exec('INSERT INTO exam_questions (exam_id,type,question,options,answer,marks,sort_order) VALUES (?,?,?,?,?,?,?)',
@@ -979,8 +979,12 @@ class ExamController {
 
     public static function update(array $user, int $id): void {
         $b = body();
-        DB::run('UPDATE exams SET title=COALESCE(?,title),status=COALESCE(?,status),duration=COALESCE(?,duration) WHERE id=? AND school_id=?',
-            [$b['title']??null,$b['status']??null,$b['duration']??null,$id,(int)$user['school_id']]);
+        // results_released lets a teacher reveal scores for a show_score=0 exam.
+        DB::run('UPDATE exams SET title=COALESCE(?,title),status=COALESCE(?,status),duration=COALESCE(?,duration),
+                    show_score=COALESCE(?,show_score),results_released=COALESCE(?,results_released) WHERE id=? AND school_id=?',
+            [$b['title']??null,$b['status']??null,$b['duration']??null,
+             isset($b['show_score'])?(int)$b['show_score']:null, isset($b['results_released'])?(int)$b['results_released']:null,
+             $id,(int)$user['school_id']]);
         respond(['updated'=>true]);
     }
 
@@ -1292,5 +1296,135 @@ class AIController {
         }
         $content = $json['choices'][0]['message']['content'] ?? '';
         respond(['content' => $content, 'model' => $payload['model'], 'usage' => $json['usage'] ?? null]);
+    }
+}
+
+// ─── StudentPortalController ──────────────────────────────────────────────────
+// The student-facing exam flow. Endpoints only ever act on the logged-in student's
+// own record, and exam questions are returned WITHOUT the correct answers.
+class StudentPortalController {
+    // Resolve the students row for the logged-in user (or 403).
+    private static function me(array $user): array {
+        $s = DB::one('SELECT id, class_id, student_id FROM students WHERE user_id=? AND deleted_at IS NULL', [(int)$user['id']]);
+        if (!$s) respond(null, 403, 'This account is not a student.');
+        return $s;
+    }
+
+    // Is a score visible to the student yet? (immediate, or teacher-released)
+    private static function scoreVisible(array $exam): bool {
+        return (int)($exam['show_score'] ?? 0) === 1 || (int)($exam['results_released'] ?? 0) === 1;
+    }
+
+    // Exams available to this student's class, with their submission state.
+    public static function myExams(array $user): void {
+        $s = self::me($user);
+        $rows = DB::query(
+            'SELECT e.id,e.title,e.exam_type,e.duration,e.total_marks,e.status,e.show_score,e.results_released,
+                    e.start_time,e.end_time, sub.name AS subject_name,
+                    (SELECT COUNT(*) FROM exam_questions q WHERE q.exam_id=e.id) AS question_count,
+                    es.id AS submission_id, es.score, es.max_score, es.needs_review, es.submitted_at
+             FROM exams e
+             JOIN subjects sub ON sub.id=e.subject_id
+             LEFT JOIN exam_submissions es ON es.exam_id=e.id AND es.student_id=?
+             WHERE e.class_id=? AND e.status IN ("active","completed")
+             ORDER BY e.created_at DESC',
+            [$s['id'], $s['class_id']]);
+        foreach ($rows as &$r) {
+            $r['submitted'] = !empty($r['submission_id']);
+            $r['score_visible'] = $r['submitted'] && self::scoreVisible($r);
+            if (!$r['score_visible']) { unset($r['score'], $r['max_score']); }
+        }
+        respond($rows);
+    }
+
+    // An exam to take: questions WITHOUT answers. Blocks re-takes.
+    public static function takeExam(array $user, int $examId): void {
+        $s = self::me($user);
+        $exam = DB::one('SELECT id,title,duration,total_marks,class_id,status,show_score,results_released FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
+        if (!$exam || (int)$exam['class_id'] !== (int)$s['class_id']) respond(null, 404, 'Exam not found for your class.');
+        if ($exam['status'] !== 'active') respond(null, 403, 'This exam is not open.');
+        $existing = DB::one('SELECT id FROM exam_submissions WHERE exam_id=? AND student_id=?', [$examId, $s['id']]);
+        if ($existing) respond(null, 409, 'You have already submitted this exam.');
+        // Strip the answer column — never send correct answers to the client.
+        $exam['questions'] = DB::query('SELECT id,type,question,options,marks,sort_order FROM exam_questions WHERE exam_id=? ORDER BY sort_order', [$examId]);
+        respond($exam);
+    }
+
+    public static function submitExam(array $user): void {
+        $s = self::me($user);
+        $b = body();
+        $examId  = (int)($b['exam_id'] ?? 0);
+        $answers = $b['answers'] ?? [];              // { question_id: value }
+        $timeTaken = (int)($b['time_taken'] ?? 0);
+        $exam = DB::one('SELECT id,class_id,status,show_score,results_released FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
+        if (!$exam || (int)$exam['class_id'] !== (int)$s['class_id']) respond(null, 404, 'Exam not found for your class.');
+        if (DB::one('SELECT id FROM exam_submissions WHERE exam_id=? AND student_id=?', [$examId, $s['id']])) {
+            respond(null, 409, 'You have already submitted this exam.');
+        }
+
+        $questions = DB::query('SELECT id,type,options,answer,marks FROM exam_questions WHERE exam_id=?', [$examId]);
+        $auto = 0.0; $maxTotal = 0.0; $needsReview = 0;
+        foreach ($questions as $q) {
+            $marks = (int)$q['marks']; $maxTotal += $marks;
+            if (in_array($q['type'], ['mcq','tf'], true)) {
+                if (self::isCorrect($q, $answers[$q['id']] ?? null)) $auto += $marks;
+            } else {
+                $needsReview = 1;   // short/essay/fill need manual grading
+            }
+        }
+        DB::exec('INSERT INTO exam_submissions (exam_id,student_id,answers,score,max_score,needs_review,submitted_at,time_taken) VALUES (?,?,?,?,?,?,NOW(),?)',
+            [$examId, $s['id'], json_encode($answers), $auto, $maxTotal, $needsReview, $timeTaken]);
+
+        $visible = self::scoreVisible($exam);
+        respond([
+            'submitted'     => true,
+            'score_visible' => $visible,
+            'needs_review'  => (bool)$needsReview,
+            'score'         => $visible ? $auto : null,
+            'max_score'     => $visible ? $maxTotal : null,
+        ], 201, 'Submitted');
+    }
+
+    // Past submissions for this student, honouring per-exam score visibility.
+    public static function myResults(array $user): void {
+        $s = self::me($user);
+        $rows = DB::query(
+            'SELECT es.id,es.score,es.max_score,es.needs_review,es.submitted_at,
+                    e.title,e.exam_type,e.show_score,e.results_released, sub.name AS subject_name
+             FROM exam_submissions es
+             JOIN exams e ON e.id=es.exam_id
+             JOIN subjects sub ON sub.id=e.subject_id
+             WHERE es.student_id=? ORDER BY es.submitted_at DESC',
+            [$s['id']]);
+        foreach ($rows as &$r) {
+            $r['score_visible'] = self::scoreVisible($r);
+            if (!$r['score_visible']) { unset($r['score'], $r['max_score']); }
+        }
+        respond($rows);
+    }
+
+    // Robustly compare a student's answer to the stored correct answer.
+    private static function isCorrect(array $q, $ans): bool {
+        if ($ans === null || $ans === '') return false;
+        $correct = trim((string)($q['answer'] ?? ''));
+        if ($correct === '') return false;
+        if ($q['type'] === 'mcq') {
+            $opts = json_decode($q['options'] ?? '[]', true) ?: [];
+            if (is_numeric($correct)) return (int)$correct === (int)$ans;         // answer stored as index
+            $chosen = is_numeric($ans) ? ($opts[(int)$ans] ?? '') : $ans;          // answer stored as option text
+            return mb_strtolower(trim((string)$chosen)) === mb_strtolower($correct);
+        }
+        if ($q['type'] === 'tf') {
+            $norm = function ($v) {
+                $v = mb_strtolower(trim((string)$v));
+                if (in_array($v, ['1','true','t','yes'], true)) return 'true';
+                if (in_array($v, ['0','false','f','no'], true)) return 'false';
+                return $v;
+            };
+            // Student sends option index (0 = True, 1 = False).
+            $student = ($ans === 0 || $ans === '0') ? 'true' : (($ans === 1 || $ans === '1') ? 'false' : $norm($ans));
+            return $norm($correct) === $student;
+        }
+        return false;
     }
 }

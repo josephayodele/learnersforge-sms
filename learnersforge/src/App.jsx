@@ -6,7 +6,8 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
          getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
-         getExams, getExam, addExamQuestions, deleteExam, login as apiLogin } from "./api/client";
+         getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
+         getMyExams, getMyExam, submitMyExam, getMyResults, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -2476,6 +2477,13 @@ const CBTExams = ({ onNav, onOpenExam }) => {
     catch (e) { window.alert(e?.message || e?.data?.message || "Could not delete this exam."); }
     finally { setBusyId(null); }
   };
+  const release = async (exam) => {
+    if (!window.confirm(`Release results for "${exam.title}" to students?`)) return;
+    setBusyId(exam.id);
+    try { await updateExamMeta(exam.id, { results_released: 1 }); setExams(p => p.map(e => e.id===exam.id ? { ...e, results_released: 1 } : e)); }
+    catch (e) { window.alert(e?.message || e?.data?.message || "Could not release results."); }
+    finally { setBusyId(null); }
+  };
   const shown = exams.filter(e => filter === "All" || (e.status || "").toLowerCase() === filter.toLowerCase());
   return (
   <div className="fi">
@@ -2517,6 +2525,9 @@ const CBTExams = ({ onNav, onOpenExam }) => {
             <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{exam.total_marks ?? "—"}</div><div style={{ fontSize:9, color:C.textMuted }}>Marks</div></div>
             <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{exam.duration}</div><div style={{ fontSize:9, color:C.textMuted }}>Minutes</div></div>
             <div style={{ flex:1 }}/>
+            {!exam.show_score && !exam.results_released && (
+              <Btn size="sm" variant="ghost" disabled={busyId===exam.id} onClick={e => { e.stopPropagation(); release(exam); }}>📣 Release</Btn>
+            )}
             <Btn size="sm" variant="secondary" onClick={e => { e.stopPropagation(); onOpenExam(exam.id); }}>Take / Preview</Btn>
           </div>
         </Card>
@@ -2585,7 +2596,7 @@ const CBTCreate = ({ onNav }) => {
         class_id: Number(classId), subject_id: Number(subjectId), term_id: Number(termId),
         title: title.trim(), exam_type: examType, duration: Number(duration),
         total_marks: totalMarks, pass_mark: Math.round(totalMarks*0.5), status,
-        shuffle_q: settings.shuffle_q?1:0, shuffle_opts: settings.shuffle_opts?1:0,
+        shuffle_q: settings.shuffle_q?1:0, shuffle_opts: settings.shuffle_opts?1:0, show_score: settings.show_score?1:0,
         questions: questions.map(q => ({
           type: q.type, question: q.text, options: q.options, marks: Number(q.marks)||0,
           answer: q.type==="mcq" ? String(q.answer) : "",
@@ -5820,7 +5831,7 @@ const Login = ({ onSuccess }) => {
 
   const submit = async (e) => {
     if (e) e.preventDefault();
-    if (!email || !password) { setError("Email and password are required."); return; }
+    if (!email || !password) { setError("Email/Student ID and password are required."); return; }
     setSubmitting(true);
     setError(null);
     try {
@@ -5844,7 +5855,7 @@ const Login = ({ onSuccess }) => {
         <div style={{fontSize:13,color:C.textMid,marginBottom:24}}>Sign in to continue to your school dashboard.</div>
 
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          <Input label="Email" value={email} onChange={setEmail} placeholder="you@school.edu" type="email"/>
+          <Input label="Email or Student ID" value={email} onChange={setEmail} placeholder="you@school.edu  or  ST0001" type="text"/>
           <Input label="Password" value={password} onChange={setPassword} placeholder="••••••••" type="password"/>
         </div>
 
@@ -5870,6 +5881,240 @@ const Login = ({ onSuccess }) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// STUDENT PORTAL  — exam taking with saved, auto-scored submissions
+// ═══════════════════════════════════════════════════════════════════════════════
+const StudentPortal = ({ user, school, onLogout }) => {
+  const [tab,        setTab]        = useState("exams");   // exams | results
+  const [view,       setView]       = useState("list");    // list | take
+  const [exams,      setExams]      = useState([]);
+  const [results,    setResults]    = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [active,     setActive]     = useState(null);      // exam being taken (with questions)
+  const [answers,    setAnswers]    = useState({});
+  const [current,    setCurrent]    = useState(0);
+  const [timeLeft,   setTimeLeft]   = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const [result,     setResult]     = useState(null);      // submission outcome
+  const [toast,      setToast]      = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+  const optsOf = o => Array.isArray(o) ? o : (typeof o === "string" ? (parseJsonLoose(o) || []) : []);
+  const fmt = s => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+
+  const loadExams   = () => { setLoading(true); getMyExams().then(r => setExams(arrOf(r))).catch(() => setExams([])).finally(() => setLoading(false)); };
+  const loadResults = () => getMyResults().then(r => setResults(arrOf(r))).catch(() => setResults([]));
+  useEffect(() => { loadExams(); loadResults(); }, []);
+
+  const doSubmit = useCallback(async (auto = false) => {
+    if (!active || submitting) return;
+    setSubmitting(true);
+    const used = (Number(active.duration)||60)*60 - timeLeft;
+    try {
+      const res = await submitMyExam(active.id, answers, Math.max(0, used));
+      setResult(res?.data ?? res);
+      loadExams(); loadResults();
+    } catch (e) {
+      const msg = e?.message || e?.data?.message || "Submission failed.";
+      flash(msg);
+      if (e?.status === 409 || /already/i.test(msg)) { setView("list"); setActive(null); }
+    } finally { setSubmitting(false); }
+  }, [active, answers, timeLeft, submitting]);
+
+  // Countdown while taking; auto-submit at zero.
+  useEffect(() => {
+    if (view !== "take" || result || !active) return;
+    if (timeLeft <= 0) { doSubmit(true); return; }
+    const t = setInterval(() => setTimeLeft(p => Math.max(0, p-1)), 1000);
+    return () => clearInterval(t);
+  }, [view, result, active, timeLeft, doSubmit]);
+
+  const startExam = async (id) => {
+    try {
+      const r = await getMyExam(id);
+      const d = r?.data ?? r;
+      const qs = (d?.questions || []).map(q => ({ ...q, options: optsOf(q.options) }));
+      if (!qs.length) { flash("This exam has no questions yet."); return; }
+      setActive({ ...d, questions: qs });
+      setAnswers({}); setCurrent(0); setResult(null);
+      setTimeLeft((Number(d?.duration)||60)*60);
+      setView("take");
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not open this exam."); }
+  };
+
+  const brand = school?.name || "LearnersForge";
+  const header = (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 20px", background:C.surface, borderBottom:`1px solid ${C.border}` }}>
+      <div style={{ display:"flex", alignItems:"center", gap:11 }}>
+        {school?.logo_url
+          ? <img src={school.logo_url} alt="" style={{ width:34, height:34, borderRadius:8, objectFit:"cover" }}/>
+          : <div style={{ width:34, height:34, borderRadius:8, background:C.accent, display:"flex", alignItems:"center", justifyContent:"center", fontSize:17 }}>🎓</div>}
+        <div><div style={{ fontSize:14, fontWeight:700 }}>{brand}</div><div style={{ fontSize:11, color:C.textMuted }}>Student Portal</div></div>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+        <div style={{ textAlign:"right" }}><div style={{ fontSize:13, fontWeight:600 }}>{user?.first_name} {user?.last_name}</div><div style={{ fontSize:11, color:C.textMuted }}>Student</div></div>
+        <Btn variant="secondary" size="sm" onClick={onLogout}>↩ Logout</Btn>
+      </div>
+    </div>
+  );
+
+  // ── Taking an exam ──
+  if (view === "take" && active) {
+    if (result) return (
+      <div style={{ minHeight:"100vh", background:C.pageBg, fontFamily:"Sora,sans-serif" }}>
+        {header}
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"60px 20px", textAlign:"center" }}>
+          <div style={{ fontSize:54 }}>✅</div>
+          <h2 style={{ fontSize:21, fontWeight:700, marginTop:12 }}>Exam Submitted</h2>
+          <p style={{ color:C.textMid, marginTop:6, fontSize:13, maxWidth:440 }}>Your answers for <strong>{active.title}</strong> have been recorded.</p>
+          {result?.score_visible ? (
+            <div style={{ marginTop:22, padding:"20px 30px", borderRadius:14, background:C.accentLight, textAlign:"center" }}>
+              <div style={{ fontSize:32, fontWeight:800, color:C.accentDark }}>{result.score} / {result.max_score}</div>
+              <div style={{ fontSize:12, color:C.textMid, marginTop:4 }}>{result.needs_review ? "Objective score — essay/short answers pending teacher review" : "Auto-graded score"}</div>
+            </div>
+          ) : (
+            <div style={{ marginTop:22, padding:"16px 24px", borderRadius:12, background:"#F8FAFC", fontSize:13, color:C.textMid, maxWidth:440 }}>
+              Your score will be available once your teacher releases results.
+            </div>
+          )}
+          <Btn onClick={() => { setView("list"); setActive(null); setResult(null); setTab("results"); }} variant="primary" style={{ marginTop:26 }}>View My Results</Btn>
+        </div>
+        {toast && <div style={{ position:"fixed", bottom:26, right:26, zIndex:2000, background:C.navy, color:"#fff", padding:"11px 18px", borderRadius:11, fontSize:12, fontWeight:600 }}>{toast}</div>}
+      </div>
+    );
+
+    const q = active.questions[current];
+    const answered = Object.keys(answers).length;
+    return (
+      <div style={{ minHeight:"100vh", background:C.pageBg, fontFamily:"Sora,sans-serif" }}>
+        {header}
+        <div style={{ maxWidth:920, margin:"0 auto", padding:22 }}>
+          <div style={{ background:C.navy, borderRadius:12, padding:"13px 20px", display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+            <div><div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{active.title}</div><div style={{ color:"#8DA4C0", fontSize:11, marginTop:2 }}>{active.questions.length} Questions · {active.duration} Minutes</div></div>
+            <div style={{ display:"flex", gap:16, alignItems:"center" }}>
+              <div style={{ textAlign:"center" }}><div style={{ color:"#8DA4C0", fontSize:9, textTransform:"uppercase" }}>Answered</div><div style={{ color:"#fff", fontSize:17, fontWeight:700 }}>{answered}/{active.questions.length}</div></div>
+              <div style={{ padding:"8px 16px", borderRadius:9, background:timeLeft<300?C.coral+"22":C.accent+"22", border:`2px solid ${timeLeft<300?C.coral:C.accent}` }}>
+                <div style={{ color:timeLeft<300?C.coral:C.accent, fontSize:22, fontWeight:700, fontFamily:"JetBrains Mono,monospace" }}>{fmt(timeLeft)}</div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 190px", gap:16 }}>
+            <Card>
+              <div style={{ display:"flex", gap:7, alignItems:"center", marginBottom:16 }}>
+                <span style={{ fontSize:12, fontWeight:700, color:C.textMuted }}>Q{current+1} of {active.questions.length}</span>
+                <Badge color={q.type==="mcq"?"blue":q.type==="short"?"green":"purple"} size="sm">{(q.type||"").toUpperCase()}</Badge>
+                <span style={{ fontSize:11, color:C.textMuted }}>{q.marks} mark{q.marks>1?"s":""}</span>
+              </div>
+              <div style={{ fontSize:15, lineHeight:1.7, marginBottom:20, padding:"13px 16px", background:"#F8FAFC", borderRadius:10, borderLeft:`3px solid ${C.accent}` }}>{q.question}</div>
+              {q.type==="mcq" && (
+                <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+                  {optsOf(q.options).map((opt,oi) => (
+                    <button key={oi} onClick={() => setAnswers(p => ({...p,[q.id]:oi}))}
+                      style={{ padding:"11px 15px", borderRadius:9, border:`2px solid ${answers[q.id]===oi?C.accent:C.border}`, background:answers[q.id]===oi?C.accentLight:C.surface, cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
+                      <div style={{ width:26, height:26, borderRadius:"50%", border:`2px solid ${answers[q.id]===oi?C.accent:C.borderDark}`, background:answers[q.id]===oi?C.accent:"transparent", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:answers[q.id]===oi?"#fff":C.textMid, flexShrink:0 }}>{["A","B","C","D","E"][oi]||oi+1}</div>
+                      <span style={{ fontSize:13, color:answers[q.id]===oi?C.accentDark:C.text, fontWeight:answers[q.id]===oi?600:400 }}>{opt}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {q.type==="tf" && (
+                <div style={{ display:"flex", gap:9 }}>
+                  {["True","False"].map((opt,oi) => (
+                    <button key={oi} onClick={() => setAnswers(p => ({...p,[q.id]:oi}))}
+                      style={{ flex:1, padding:"12px", borderRadius:9, border:`2px solid ${answers[q.id]===oi?C.accent:C.border}`, background:answers[q.id]===oi?C.accentLight:C.surface, cursor:"pointer", fontSize:13, fontWeight:600, color:answers[q.id]===oi?C.accentDark:C.text }}>{opt}</button>
+                  ))}
+                </div>
+              )}
+              {(q.type==="short"||q.type==="essay"||q.type==="fill") && (
+                <textarea value={answers[q.id]||""} onChange={e => setAnswers(p => ({...p,[q.id]:e.target.value}))}
+                  placeholder="Type your answer here…"
+                  style={{ width:"100%", padding:"10px 13px", borderRadius:9, border:`1px solid ${C.border}`, fontSize:13, minHeight:q.type==="essay"?180:90, resize:"vertical", outline:"none", fontFamily:"Sora,sans-serif", lineHeight:1.7, color:C.text }}/>
+              )}
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:20 }}>
+                <Btn onClick={() => setCurrent(p => Math.max(0,p-1))} variant="secondary" disabled={current===0}>← Previous</Btn>
+                {current < active.questions.length-1
+                  ? <Btn onClick={() => setCurrent(p => p+1)} variant="primary">Next →</Btn>
+                  : <Btn onClick={() => { if (window.confirm("Submit your exam? You cannot change answers after submitting.")) doSubmit(false); }} variant="navy" disabled={submitting}>{submitting?"Submitting…":"Submit Exam 🚀"}</Btn>}
+              </div>
+            </Card>
+            <Card>
+              <div style={{ fontSize:12, fontWeight:700, marginBottom:10 }}>Questions</div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                {active.questions.map((q2,i) => (
+                  <button key={q2.id} onClick={() => setCurrent(i)}
+                    style={{ width:32, height:32, borderRadius:7, border:`2px solid ${current===i?C.accent:answers[q2.id]!==undefined?C.accentDark:C.border}`, background:current===i||answers[q2.id]!==undefined?C.accentLight:C.surface, fontSize:11, fontWeight:700, cursor:"pointer", color:answers[q2.id]!==undefined?C.accentDark:C.textMid }}>{i+1}</button>
+                ))}
+              </div>
+              <Btn onClick={() => { if (window.confirm("Submit your exam now?")) doSubmit(false); }} variant="primary" disabled={submitting} style={{ width:"100%", justifyContent:"center", marginTop:14 }}>Submit</Btn>
+              <Btn onClick={() => { if (window.confirm("Leave the exam? Your answers won't be saved.")) { setView("list"); setActive(null); } }} variant="ghost" size="sm" style={{ width:"100%", justifyContent:"center", marginTop:8 }}>Exit</Btn>
+            </Card>
+          </div>
+        </div>
+        {toast && <div style={{ position:"fixed", bottom:26, right:26, zIndex:2000, background:C.navy, color:"#fff", padding:"11px 18px", borderRadius:11, fontSize:12, fontWeight:600 }}>{toast}</div>}
+      </div>
+    );
+  }
+
+  // ── Dashboard (exam list / results) ──
+  return (
+    <div style={{ minHeight:"100vh", background:C.pageBg, fontFamily:"Sora,sans-serif" }}>
+      {header}
+      <div style={{ maxWidth:920, margin:"0 auto", padding:22 }}>
+        <div style={{ display:"flex", gap:8, marginBottom:18 }}>
+          {[["exams","📝 My Exams"],["results","📊 My Results"]].map(([id,l]) => (
+            <button key={id} onClick={() => setTab(id)} style={{ padding:"8px 16px", borderRadius:9, border:`1px solid ${tab===id?C.accent:C.border}`, background:tab===id?C.accentLight:C.surface, color:tab===id?C.accentDark:C.textMid, fontSize:13, fontWeight:600, cursor:"pointer" }}>{l}</button>
+          ))}
+        </div>
+
+        {tab==="exams" && (loading ? (
+          <Card style={{ textAlign:"center", color:C.textMuted, fontSize:13, padding:"44px" }}>Loading your exams…</Card>
+        ) : exams.length===0 ? (
+          <Card style={{ textAlign:"center", padding:"48px 16px" }}><div style={{ fontSize:34, marginBottom:10 }}>📭</div><div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>No exams available</div><div style={{ fontSize:13, color:C.textMid }}>You have no active exams right now. Check back later.</div></Card>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
+            {exams.map(e => (
+              <Card key={e.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12 }}>
+                <div>
+                  <div style={{ fontSize:14, fontWeight:700 }}>{e.title}</div>
+                  <div style={{ fontSize:11, color:C.textMuted, marginTop:2 }}>{[e.subject_name, e.exam_type].filter(Boolean).join(" · ")} · {e.question_count} questions · {e.duration} min</div>
+                </div>
+                {e.submitted ? (
+                  <div style={{ textAlign:"right" }}>
+                    <Badge color="green" size="sm">Submitted</Badge>
+                    {e.score_visible && <div style={{ fontSize:13, fontWeight:700, marginTop:4 }}>{e.score}/{e.max_score}</div>}
+                  </div>
+                ) : (
+                  <Btn variant="primary" onClick={() => startExam(e.id)}>Start Exam →</Btn>
+                )}
+              </Card>
+            ))}
+          </div>
+        ))}
+
+        {tab==="results" && (results.length===0 ? (
+          <Card style={{ textAlign:"center", padding:"48px 16px" }}><div style={{ fontSize:34, marginBottom:10 }}>📊</div><div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>No results yet</div><div style={{ fontSize:13, color:C.textMid }}>Your submitted exams and scores will appear here.</div></Card>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
+            {results.map(r => (
+              <Card key={r.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12 }}>
+                <div>
+                  <div style={{ fontSize:14, fontWeight:700 }}>{r.title}</div>
+                  <div style={{ fontSize:11, color:C.textMuted, marginTop:2 }}>{[r.subject_name, r.exam_type].filter(Boolean).join(" · ")} · {r.submitted_at ? new Date(r.submitted_at).toLocaleDateString() : ""}</div>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  {r.score_visible
+                    ? <><div style={{ fontSize:16, fontWeight:800, color:C.accentDark }}>{r.score}/{r.max_score}</div>{r.needs_review ? <div style={{ fontSize:10, color:C.amber }}>review pending</div> : null}</>
+                    : <Badge color="gray" size="sm">Pending release</Badge>}
+                </div>
+              </Card>
+            ))}
+          </div>
+        ))}
+      </div>
+      {toast && <div style={{ position:"fixed", bottom:26, right:26, zIndex:2000, background:C.navy, color:"#fff", padding:"11px 18px", borderRadius:11, fontSize:12, fontWeight:600 }}>{toast}</div>}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // APP SHELL
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function App() {
@@ -5878,6 +6123,8 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [school,    setSchool]    = useState(null);   // school name + logo for the app chrome
   const [examId,    setExamId]    = useState(null);   // exam being taken/previewed
+  const [me,        setMe]        = useState(null);   // current user (for role-based routing)
+  const [meLoading, setMeLoading] = useState(true);
   // Navigate. Generic navigation clears the selected exam so the sidebar "Take Exam"
   // always starts on the picker; openExam sets it directly and bypasses this.
   const go = p => { setExamId(null); setPage(p); };
@@ -5898,13 +6145,31 @@ export default function App() {
     return () => window.removeEventListener('lf-school-updated', load);
   }, [authed]);
 
+  // Load the current user once signed in — drives role-based routing.
+  useEffect(() => {
+    if (!authed) { setMe(null); setMeLoading(false); return; }
+    setMeLoading(true);
+    getMe().then(r => setMe(r?.data ?? r)).catch(() => setMe(null)).finally(() => setMeLoading(false));
+  }, [authed]);
+
   const handleLogout = () => {
     localStorage.removeItem('lf_token');
     setAuthed(false);
+    setMe(null);
     setPage("dashboard");
   };
 
-  if (!authed) return <Login onSuccess={() => setAuthed(true)}/>;
+  if (!authed) return <Login onSuccess={() => { setAuthed(true); setMeLoading(true); }}/>;
+
+  if (meLoading) return (
+    <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:C.pageBg, fontFamily:"Sora,sans-serif", color:C.textMid, gap:10 }}>
+      <span style={{ width:16, height:16, borderRadius:"50%", border:`2px solid ${C.border}`, borderTopColor:C.accent, animation:"spin .8s linear infinite", display:"inline-block" }}/> Loading…
+    </div>
+  );
+
+  // Students and parents get the exam-taking portal, not the admin console.
+  if (me && (me.role === "student" || me.role === "parent"))
+    return <StudentPortal user={me} school={school} onLogout={handleLogout}/>;
 
   const PAGES = {
     dashboard:   <Dashboard  onNav={go}/>,

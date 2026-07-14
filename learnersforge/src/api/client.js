@@ -127,6 +127,14 @@ export const updateExam  = (id, data) => api.put(`/exams/${id}`, data);
 export const submitExam  = data => api.post('/exams/submit', data);
 export const addExamQuestions = (id, questions) => api.post(`/exams/${id}/questions`, { questions });
 export const deleteExam  = id => api.delete(`/exams/${id}`);
+export const updateExamMeta = (id, data) => api.put(`/exams/${id}`, data);
+
+// ── Student portal (exam taking) ────────────────────────────────────────────────
+export const getMyExams       = () => api.get('/my/exams');
+export const getMyExam        = id => api.get(`/my/exams/${id}`);
+export const submitMyExam     = (exam_id, answers, time_taken = 0) =>
+  api.post('/my/exam-submit', { exam_id, answers, time_taken });
+export const getMyResults     = () => api.get('/my/results');
 
 // ── Inventory ─────────────────────────────────────────────────────────────────
 export const getInventory    = (category = '') =>
