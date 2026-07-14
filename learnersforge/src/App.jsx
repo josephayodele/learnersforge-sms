@@ -6,7 +6,7 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
          getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
-         getExams, addExamQuestions, login as apiLogin } from "./api/client";
+         getExams, getExam, addExamQuestions, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -2474,33 +2474,51 @@ const Timetable = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CBT EXAMS LIST
 // ═══════════════════════════════════════════════════════════════════════════════
-const CBTExams = ({ onNav }) => (
+const CBTExams = ({ onNav, onOpenExam }) => {
+  const [exams,   setExams]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter,  setFilter]  = useState("All");
+  useEffect(() => { getExams().then(r => setExams(arrOf(r))).catch(() => setExams([])).finally(() => setLoading(false)); }, []);
+  const shown = exams.filter(e => filter === "All" || (e.status || "").toLowerCase() === filter.toLowerCase());
+  return (
   <div className="fi">
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
       <div style={{ display:"flex", gap:7 }}>
         {["All","Active","Draft","Completed"].map(f => (
-          <button key={f} style={{ padding:"6px 14px", borderRadius:8, border:`1px solid ${C.border}`, background:f==="All"?C.navy:C.surface, color:f==="All"?"#fff":C.textMid, fontSize:12, fontWeight:500, cursor:"pointer" }}>{f}</button>
+          <button key={f} onClick={() => setFilter(f)} style={{ padding:"6px 14px", borderRadius:8, border:`1px solid ${C.border}`, background:filter===f?C.navy:C.surface, color:filter===f?"#fff":C.textMid, fontSize:12, fontWeight:500, cursor:"pointer" }}>{f}</button>
         ))}
       </div>
       <Btn onClick={() => onNav("cbt-create")} variant="primary">+ Create Exam</Btn>
     </div>
+    {loading ? (
+      <Card style={{ textAlign:"center", color:C.textMuted, fontSize:12, padding:"44px" }}>Loading exams…</Card>
+    ) : exams.length === 0 ? (
+      <Card style={{ textAlign:"center", padding:"48px 16px" }}>
+        <div style={{ fontSize:34, marginBottom:10 }}>💻</div>
+        <div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>No exams yet</div>
+        <div style={{ fontSize:13, color:C.textMid, marginBottom:18 }}>Create your first computer-based test, or generate questions in AI Teaching Tools and map them here.</div>
+        <Btn onClick={() => onNav("cbt-create")} variant="primary">+ Create Exam</Btn>
+      </Card>
+    ) : (
     <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14 }}>
-      {EXAMS.map(exam => (
-        <Card key={exam.id} onClick={() => onNav("cbt-create")}>
+      {shown.map(exam => {
+        const st = (exam.status || "draft").toLowerCase();
+        return (
+        <Card key={exam.id} onClick={() => onOpenExam(exam.id)}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
             <div style={{ width:42, height:42, borderRadius:10, background:C.navy, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>💻</div>
-            <Badge color={exam.status==="Active"?"green":exam.status==="Draft"?"amber":"gray"}>{exam.status}</Badge>
+            <Badge color={st==="active"?"green":st==="draft"?"amber":"gray"}>{st.charAt(0).toUpperCase()+st.slice(1)}</Badge>
           </div>
           <div style={{ fontSize:14, fontWeight:700, marginBottom:3 }}>{exam.title}</div>
-          <div style={{ fontSize:11, color:C.textMuted, marginBottom:12 }}>{exam.class} · {exam.type}</div>
+          <div style={{ fontSize:11, color:C.textMuted, marginBottom:12 }}>{[exam.class_name, exam.subject_name, exam.exam_type].filter(Boolean).join(" · ")}</div>
           <div style={{ display:"flex", gap:14, borderTop:`1px solid ${C.border}`, paddingTop:11 }}>
-            <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{exam.questions}</div><div style={{ fontSize:9, color:C.textMuted }}>Questions</div></div>
+            <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{exam.total_marks ?? "—"}</div><div style={{ fontSize:9, color:C.textMuted }}>Marks</div></div>
             <div style={{ textAlign:"center" }}><div style={{ fontSize:15, fontWeight:700 }}>{exam.duration}</div><div style={{ fontSize:9, color:C.textMuted }}>Minutes</div></div>
             <div style={{ flex:1 }}/>
-            <Btn size="sm" variant="secondary" onClick={e => { e.stopPropagation(); onNav("cbt-take"); }}>Preview</Btn>
+            <Btn size="sm" variant="secondary" onClick={e => { e.stopPropagation(); onOpenExam(exam.id); }}>Take / Preview</Btn>
           </div>
         </Card>
-      ))}
+      );})}
       <button onClick={() => onNav("cbt-create")}
         style={{ border:`2px dashed ${C.border}`, borderRadius:14, padding:"26px 16px", background:"transparent", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:9, transition:"all .15s" }}
         onMouseEnter={e => { e.currentTarget.style.borderColor=C.accent; e.currentTarget.style.background=C.accentLight; }}
@@ -2508,8 +2526,10 @@ const CBTExams = ({ onNav }) => (
         <span style={{ fontSize:28 }}>+</span><span style={{ fontSize:13, fontWeight:600, color:C.textMid }}>Create New Exam</span>
       </button>
     </div>
+    )}
   </div>
-);
+  );
+};
 
 // ── CBT CREATE ────────────────────────────────────────────────────────────────
 const EXAM_TYPES = [{value:"mid-term",label:"Mid-Term"},{value:"final",label:"Final Exam"},{value:"quiz",label:"Class Quiz"},{value:"ca",label:"C.A. Test"}];
@@ -2713,38 +2733,108 @@ const CBTCreate = ({ onNav }) => {
 };
 
 // ── CBT TAKE ──────────────────────────────────────────────────────────────────
-const CBTTake = ({ onNav }) => {
+const CBTTake = ({ onNav, examId, onOpenExam }) => {
+  const [exam,      setExam]      = useState(null);
+  const [loading,   setLoading]   = useState(!!examId);
+  const [err,       setErr]       = useState("");
+  const [picker,    setPicker]    = useState([]);   // exam list when opened with no examId
   const [current,   setCurrent]   = useState(0);
   const [answers,   setAnswers]   = useState({});
   const [timeLeft,  setTimeLeft]  = useState(3600);
   const [submitted, setSubmitted] = useState(false);
   const [shortText, setShortText] = useState({});
+
+  // Parse an options column that may arrive as a JSON string or an array.
+  const optsOf = o => Array.isArray(o) ? o : (typeof o === "string" ? (parseJsonLoose(o) || []) : []);
+
+  // Load the selected exam (with its questions), or the exam list to pick from.
   useEffect(() => {
-    if (submitted) return;
+    let cancelled = false;
+    setSubmitted(false); setCurrent(0); setAnswers({}); setShortText({}); setErr("");
+    if (!examId) { setExam(null); getExams().then(r => { if (!cancelled) setPicker(arrOf(r)); }).catch(() => {}); return; }
+    setLoading(true);
+    getExam(examId).then(r => {
+      if (cancelled) return;
+      const d = r?.data ?? r;
+      const qs = (d?.questions || []).map(q => ({ ...q, options: optsOf(q.options) }));
+      setExam({ ...d, questions: qs });
+      setTimeLeft((Number(d?.duration) || 60) * 60);
+    }).catch(e => { if (!cancelled) setErr(e?.message || e?.data?.message || "Could not load this exam."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [examId]);
+
+  const qs = exam?.questions || [];
+  useEffect(() => {
+    if (submitted || !exam) return;
     const t = setInterval(() => setTimeLeft(p => p > 0 ? p-1 : 0), 1000);
     return () => clearInterval(t);
-  }, [submitted]);
-  const fmt  = s => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
-  const q    = CBT_QS[current];
+  }, [submitted, exam]);
+
+  const fmt = s => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
   const answered = Object.keys(answers).length;
+
+  // No exam chosen → let the user pick one to preview.
+  if (!examId) return (
+    <div className="fi">
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+        <div style={{ fontSize:16, fontWeight:700 }}>Take / Preview an Exam</div>
+        <Btn onClick={() => onNav("cbt")} variant="secondary" size="sm">← All Exams</Btn>
+      </div>
+      {picker.length === 0
+        ? <Card style={{ textAlign:"center", color:C.textMuted, fontSize:13, padding:"44px" }}>No exams available yet. Create one first.</Card>
+        : <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+            {picker.map(e => (
+              <Card key={e.id} onClick={() => onOpenExam(e.id)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer" }}>
+                <div><div style={{ fontSize:14, fontWeight:700 }}>{e.title}</div><div style={{ fontSize:11, color:C.textMuted }}>{[e.class_name,e.subject_name,e.exam_type].filter(Boolean).join(" · ")}</div></div>
+                <Btn size="sm" variant="secondary" onClick={ev => { ev.stopPropagation(); onOpenExam(e.id); }}>Open →</Btn>
+              </Card>
+            ))}
+          </div>}
+    </div>
+  );
+
+  if (loading) return <div style={{ padding:"60px", textAlign:"center", color:C.textMuted, fontSize:13 }}>Loading exam…</div>;
+  if (err) return (
+    <div style={{ padding:"50px 20px", textAlign:"center" }}>
+      <div style={{ fontSize:34, marginBottom:10 }}>⚠️</div>
+      <div style={{ fontSize:14, color:C.textMid, marginBottom:16 }}>{err}</div>
+      <Btn onClick={() => onNav("cbt")} variant="primary">← Back to Exams</Btn>
+    </div>
+  );
+  if (exam && qs.length === 0) return (
+    <div style={{ padding:"50px 20px", textAlign:"center" }}>
+      <div style={{ fontSize:34, marginBottom:10 }}>📭</div>
+      <div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>{exam.title}</div>
+      <div style={{ fontSize:13, color:C.textMid, marginBottom:16 }}>This exam has no questions yet. Add questions in the editor, or map AI-generated questions to it.</div>
+      <Btn onClick={() => onNav("cbt")} variant="primary">← Back to Exams</Btn>
+    </div>
+  );
+
+  const q = qs[current];
+
   if (submitted) return (
     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"60px 20px" }}>
-      <div style={{ fontSize:54 }}>🎉</div>
-      <h2 style={{ fontSize:21, fontWeight:700, marginTop:12 }}>Exam Submitted!</h2>
-      <p style={{ color:C.textMid, marginTop:6, fontSize:13 }}>Results will be released by your teacher.</p>
+      <div style={{ fontSize:54 }}>✅</div>
+      <h2 style={{ fontSize:21, fontWeight:700, marginTop:12 }}>Preview Complete</h2>
+      <p style={{ color:C.textMid, marginTop:6, fontSize:13, maxWidth:420, textAlign:"center" }}>This was a preview of <strong>{exam.title}</strong>. Responses in preview mode are not recorded — student submissions will be saved once the student portal is enabled.</p>
       <div style={{ display:"flex", gap:16, marginTop:26 }}>
-        <div style={{ padding:"17px 26px", borderRadius:12, background:C.accentLight, textAlign:"center" }}><div style={{ fontSize:24, fontWeight:700, color:C.accentDark }}>{answered}/{CBT_QS.length}</div><div style={{ fontSize:11, color:C.textMid, marginTop:2 }}>Answered</div></div>
-        <div style={{ padding:"17px 26px", borderRadius:12, background:C.skyLight, textAlign:"center" }}><div style={{ fontSize:24, fontWeight:700, color:C.sky }}>{fmt(3600-timeLeft)}</div><div style={{ fontSize:11, color:C.textMid, marginTop:2 }}>Time Used</div></div>
+        <div style={{ padding:"17px 26px", borderRadius:12, background:C.accentLight, textAlign:"center" }}><div style={{ fontSize:24, fontWeight:700, color:C.accentDark }}>{answered}/{qs.length}</div><div style={{ fontSize:11, color:C.textMid, marginTop:2 }}>Answered</div></div>
+        <div style={{ padding:"17px 26px", borderRadius:12, background:C.skyLight, textAlign:"center" }}><div style={{ fontSize:24, fontWeight:700, color:C.sky }}>{fmt((Number(exam.duration)||60)*60 - timeLeft)}</div><div style={{ fontSize:11, color:C.textMid, marginTop:2 }}>Time Used</div></div>
       </div>
       <Btn onClick={() => onNav("cbt")} variant="primary" style={{ marginTop:26 }}>Back to Exams</Btn>
     </div>
   );
+
   return (
     <div className="fi">
       <div style={{ background:C.navy, borderRadius:12, padding:"13px 20px", display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-        <div><div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>Mathematics Mid-Term Exam</div><div style={{ color:"#8DA4C0", fontSize:11, marginTop:2 }}>SSS 2 · {CBT_QS.length} Questions · 60 Minutes</div></div>
+        <div>
+          <div style={{ color:"#fff", fontSize:14, fontWeight:700 }}>{exam.title} <Badge color="amber" size="sm">Preview</Badge></div>
+          <div style={{ color:"#8DA4C0", fontSize:11, marginTop:2 }}>{[exam.class_name,exam.subject_name].filter(Boolean).join(" · ")} · {qs.length} Questions · {exam.duration} Minutes</div>
+        </div>
         <div style={{ display:"flex", gap:16, alignItems:"center" }}>
-          <div style={{ textAlign:"center" }}><div style={{ color:"#8DA4C0", fontSize:9, textTransform:"uppercase" }}>Answered</div><div style={{ color:"#fff", fontSize:17, fontWeight:700 }}>{answered}/{CBT_QS.length}</div></div>
+          <div style={{ textAlign:"center" }}><div style={{ color:"#8DA4C0", fontSize:9, textTransform:"uppercase" }}>Answered</div><div style={{ color:"#fff", fontSize:17, fontWeight:700 }}>{answered}/{qs.length}</div></div>
           <div style={{ padding:"8px 16px", borderRadius:9, background:timeLeft<300?C.coral+"22":C.accent+"22", border:`2px solid ${timeLeft<300?C.coral:C.accent}` }}>
             <div style={{ color:timeLeft<300?C.coral:C.accent, fontSize:22, fontWeight:700, fontFamily:"JetBrains Mono,monospace" }}>{fmt(timeLeft)}</div>
           </div>
@@ -2753,25 +2843,25 @@ const CBTTake = ({ onNav }) => {
       <div style={{ display:"grid", gridTemplateColumns:"1fr 190px", gap:16 }}>
         <Card>
           <div style={{ display:"flex", gap:7, alignItems:"center", marginBottom:16 }}>
-            <span style={{ fontSize:12, fontWeight:700, color:C.textMuted }}>Q{current+1} of {CBT_QS.length}</span>
-            <Badge color={q.type==="mcq"?"blue":q.type==="short"?"green":"purple"} size="sm">{q.type.toUpperCase()}</Badge>
+            <span style={{ fontSize:12, fontWeight:700, color:C.textMuted }}>Q{current+1} of {qs.length}</span>
+            <Badge color={q.type==="mcq"?"blue":q.type==="short"?"green":"purple"} size="sm">{(q.type||"").toUpperCase()}</Badge>
             <span style={{ fontSize:11, color:C.textMuted }}>{q.marks} mark{q.marks>1?"s":""}</span>
           </div>
-          <div style={{ fontSize:15, lineHeight:1.7, marginBottom:20, padding:"13px 16px", background:"#F8FAFC", borderRadius:10, borderLeft:`3px solid ${C.accent}` }}>{q.text}</div>
+          <div style={{ fontSize:15, lineHeight:1.7, marginBottom:20, padding:"13px 16px", background:"#F8FAFC", borderRadius:10, borderLeft:`3px solid ${C.accent}` }}>{q.question}</div>
           {q.type==="mcq" && (
             <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
-              {q.options.map((opt,oi) => (
+              {optsOf(q.options).map((opt,oi) => (
                 <button key={oi} onClick={() => setAnswers(p => ({...p,[q.id]:oi}))}
                   style={{ padding:"11px 15px", borderRadius:9, border:`2px solid ${answers[q.id]===oi?C.accent:C.border}`, background:answers[q.id]===oi?C.accentLight:C.surface, cursor:"pointer", display:"flex", alignItems:"center", gap:12, transition:"all .15s" }}
                   onMouseEnter={e=>{if(answers[q.id]!==oi)e.currentTarget.style.borderColor=C.borderDark;}}
                   onMouseLeave={e=>{if(answers[q.id]!==oi)e.currentTarget.style.borderColor=C.border;}}>
-                  <div style={{ width:26, height:26, borderRadius:"50%", border:`2px solid ${answers[q.id]===oi?C.accent:C.borderDark}`, background:answers[q.id]===oi?C.accent:"transparent", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:answers[q.id]===oi?"#fff":C.textMid, flexShrink:0 }}>{["A","B","C","D"][oi]}</div>
+                  <div style={{ width:26, height:26, borderRadius:"50%", border:`2px solid ${answers[q.id]===oi?C.accent:C.borderDark}`, background:answers[q.id]===oi?C.accent:"transparent", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:answers[q.id]===oi?"#fff":C.textMid, flexShrink:0 }}>{["A","B","C","D","E"][oi]||oi+1}</div>
                   <span style={{ fontSize:13, color:answers[q.id]===oi?C.accentDark:C.text, fontWeight:answers[q.id]===oi?600:400 }}>{opt}</span>
                 </button>
               ))}
             </div>
           )}
-          {(q.type==="short"||q.type==="essay") && (
+          {(q.type==="short"||q.type==="essay"||q.type==="fill") && (
             <div>
               <RichBar/>
               <textarea value={shortText[q.id]||""} onChange={e => { setShortText(p=>({...p,[q.id]:e.target.value})); setAnswers(p=>({...p,[q.id]:e.target.value})); }}
@@ -2779,18 +2869,26 @@ const CBTTake = ({ onNav }) => {
                 style={{ width:"100%", padding:"10px 13px", borderRadius:"0 0 9px 9px", border:`1px solid ${C.border}`, borderTop:"none", fontSize:13, minHeight:q.type==="essay"?180:90, resize:"vertical", outline:"none", fontFamily:"Sora,sans-serif", lineHeight:1.7 }}/>
             </div>
           )}
+          {q.type==="tf" && (
+            <div style={{ display:"flex", gap:9 }}>
+              {["True","False"].map((opt,oi) => (
+                <button key={oi} onClick={() => setAnswers(p => ({...p,[q.id]:oi}))}
+                  style={{ flex:1, padding:"12px", borderRadius:9, border:`2px solid ${answers[q.id]===oi?C.accent:C.border}`, background:answers[q.id]===oi?C.accentLight:C.surface, cursor:"pointer", fontSize:13, fontWeight:600, color:answers[q.id]===oi?C.accentDark:C.text }}>{opt}</button>
+              ))}
+            </div>
+          )}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:20 }}>
             <Btn onClick={() => setCurrent(p => Math.max(0,p-1))} variant="secondary" disabled={current===0}>← Previous</Btn>
-            {current < CBT_QS.length-1
+            {current < qs.length-1
               ? <Btn onClick={() => setCurrent(p => p+1)} variant="primary">Next →</Btn>
-              : <Btn onClick={() => setSubmitted(true)} variant="navy">Submit Exam 🚀</Btn>}
+              : <Btn onClick={() => setSubmitted(true)} variant="navy">Finish Preview 🚀</Btn>}
           </div>
         </Card>
         <Card>
           <div style={{ fontSize:12, fontWeight:700, marginBottom:10 }}>Question Navigator</div>
           <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-            {CBT_QS.map((q2,i) => (
-              <button key={i} onClick={() => setCurrent(i)}
+            {qs.map((q2,i) => (
+              <button key={q2.id} onClick={() => setCurrent(i)}
                 style={{ width:32, height:32, borderRadius:7, border:`2px solid ${current===i?C.accent:answers[q2.id]!==undefined?C.accentDark:C.border}`, background:current===i||answers[q2.id]!==undefined?C.accentLight:C.surface, fontSize:11, fontWeight:700, cursor:"pointer", color:answers[q2.id]!==undefined?C.accentDark:C.textMid }}>{i+1}</button>
             ))}
           </div>
@@ -5777,6 +5875,11 @@ export default function App() {
   const [page,      setPage]      = useState("dashboard");
   const [collapsed, setCollapsed] = useState(false);
   const [school,    setSchool]    = useState(null);   // school name + logo for the app chrome
+  const [examId,    setExamId]    = useState(null);   // exam being taken/previewed
+  // Navigate. Generic navigation clears the selected exam so the sidebar "Take Exam"
+  // always starts on the picker; openExam sets it directly and bypasses this.
+  const go = p => { setExamId(null); setPage(p); };
+  const openExam = id => { setExamId(id); setPage("cbt-take"); };
 
   useEffect(() => {
     const onUnauth = () => setAuthed(false);
@@ -5802,15 +5905,15 @@ export default function App() {
   if (!authed) return <Login onSuccess={() => setAuthed(true)}/>;
 
   const PAGES = {
-    dashboard:   <Dashboard  onNav={setPage}/>,
+    dashboard:   <Dashboard  onNav={go}/>,
     students:    <Students/>,
     staff:       <Staff/>,
     attendance:  <Attendance/>,
     grades:      <Grades/>,
     timetable:   <Timetable/>,
-    cbt:         <CBTExams   onNav={setPage}/>,
-    "cbt-create":<CBTCreate  onNav={setPage}/>,
-    "cbt-take":  <CBTTake    onNav={setPage}/>,
+    cbt:         <CBTExams   onNav={go} onOpenExam={openExam}/>,
+    "cbt-create":<CBTCreate  onNav={go}/>,
+    "cbt-take":  <CBTTake    onNav={go} examId={examId} onOpenExam={openExam}/>,
     "ai-tools":  <AITools/>,
     fees:        <Fees/>,
     messaging:   <Messaging/>,
@@ -5836,11 +5939,11 @@ export default function App() {
     <>
       <style>{G}</style>
       <div style={{ display:"flex", minHeight:"100vh" }}>
-        <Sidebar active={page} onNav={setPage} collapsed={collapsed} setCollapsed={setCollapsed} school={school}/>
+        <Sidebar active={page} onNav={go} collapsed={collapsed} setCollapsed={setCollapsed} school={school}/>
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
-          <Topbar page={page} onNav={setPage} onLogout={handleLogout} school={school}/>
+          <Topbar page={page} onNav={go} onLogout={handleLogout} school={school}/>
           <main style={{ flex:1, padding:22, overflowY:"auto" }}>
-            {PAGES[page] || <Dashboard onNav={setPage}/>}
+            {PAGES[page] || <Dashboard onNav={go}/>}
           </main>
         </div>
       </div>
