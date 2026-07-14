@@ -5,7 +5,7 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
          getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
-         getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, login as apiLogin } from "./api/client";
+         getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -1130,7 +1130,8 @@ const Attendance = () => {
         <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
           <label style={{ fontSize:11, fontWeight:700, color:C.textMid, letterSpacing:".4px", textTransform:"uppercase" }}>Date</label>
           <input type="date" value={date} onChange={e => setDate(e.target.value)}
-            style={{ padding:"8px 12px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, outline:"none", background:C.surface, color:C.text }}/>
+            onClick={e => e.target.showPicker?.()} onFocus={e => e.target.showPicker?.()}
+            style={{ padding:"8px 12px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, outline:"none", background:C.surface, color:C.text, cursor:"pointer", colorScheme:"light" }}/>
         </div>
         <div style={{ marginLeft:"auto", display:"flex", gap:9, alignSelf:"center" }}>
           <Btn variant="primary" disabled={saving || totalMarked===0} onClick={save}>{saving?"Saving…":`✅ Submit (${totalMarked}/${students.length})`}</Btn>
@@ -1372,6 +1373,19 @@ const TraitSel = ({ value, onChange }) => (
     {["Excellent","Very Good","Good","Fair","Poor"].map(r => <option key={r} value={r}>{r}</option>)}
   </select>
 );
+
+// Best-effort JSON parse for AI output: strips ``` fences and slices to the
+// outermost array/object so a stray sentence before/after JSON doesn't break it.
+const parseJsonLoose = raw => {
+  if (!raw) return null;
+  let s = String(raw).replace(/```json|```/gi, "").trim();
+  try { return JSON.parse(s); } catch { /* fall through */ }
+  const a = s.indexOf("["), b = s.lastIndexOf("]");
+  const o = s.indexOf("{"), p = s.lastIndexOf("}");
+  const start = a >= 0 ? a : o, end = a >= 0 ? b : p;
+  if (start >= 0 && end > start) { try { return JSON.parse(s.slice(start, end + 1)); } catch { /* noop */ } }
+  return null;
+};
 
 // Pull an array out of the {status,data,message} envelope, by key or directly.
 const arrOf = (res, key) => Array.isArray(res?.data?.[key]) ? res.data[key]
@@ -2768,26 +2782,43 @@ const AITools = () => {
   const [mapExam,        setMapExam]       = useState("");
   const [mapModal,       setMapModal]      = useState(false);
   const [toast,          setToast]         = useState(null);
+  // Rubric builder
+  const [rubType,        setRubType]       = useState("essay");
+  const [rubMarks,       setRubMarks]      = useState("20");
+  const [rubContent,     setRubContent]    = useState("");
+  const [loadingRub,     setLoadingRub]    = useState(false);
+  // Chat assistant
+  const [chatMsgs,       setChatMsgs]      = useState([]);   // { role, content }
+  const [chatInput,      setChatInput]     = useState("");
+  const [chatBusy,       setChatBusy]      = useState(false);
+  // Performance insights
+  const [insClasses,     setInsClasses]    = useState([]);
+  const [insTerms,       setInsTerms]      = useState([]);
+  const [insStudents,    setInsStudents]   = useState([]);
+  const [insClass,       setInsClass]      = useState("");
+  const [insStudent,     setInsStudent]    = useState("");
+  const [insTerm,        setInsTerm]       = useState("");
+  const [insContent,     setInsContent]    = useState("");
+  const [loadingIns,     setLoadingIns]    = useState(false);
 
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(null), 3000); };
 
   const generateQuestions = useCallback(async () => {
     setLoading(true); setAiQuestions([]);
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
-          messages:[{ role:"user", content:
-            `You are an expert teacher. Generate ${qCount} ${qType==="mcq"?"multiple choice":qType==="short"?"short answer":"essay"} questions.\nSubject: ${subject}. Topic: ${topic}. Difficulty: ${difficulty}.${customQ?"\n\nAdditional instruction: "+customQ:""}\n\nLesson Notes:\n${notes}\n\nRespond ONLY with a JSON array, no markdown, no preamble.\n${qType==="mcq"?'[{"type":"mcq","text":"?","options":["A","B","C","D"],"answer":0,"marks":2}]':'[{"type":"'+qType+'","text":"?","model_answer":"expected","marks":5}]'}`
-          }]
-        })
+      const shape = qType==="mcq"
+        ? '[{"type":"mcq","text":"?","options":["A","B","C","D"],"answer":0,"marks":2}]'
+        : '[{"type":"'+qType+'","text":"?","model_answer":"expected","marks":5}]';
+      const { content } = await aiChat({
+        system:"You are an expert Nigerian secondary-school teacher and exam setter. You reply ONLY with valid JSON — no markdown fences, no preamble, no commentary.",
+        prompt:`Generate ${qCount} ${qType==="mcq"?"multiple choice":qType==="short"?"short answer":qType==="essay"?"essay":"mixed"} question(s).\nSubject: ${subject}. Topic: ${topic}. Difficulty: ${difficulty}.${customQ?"\n\nAdditional instruction: "+customQ:""}\n\nLesson Notes:\n${notes}\n\nRespond ONLY with a JSON array in exactly this shape:\n${shape}`,
+        temperature:0.6, max_tokens:2000,
       });
-      const data = await resp.json();
-      const raw  = data.content?.find(c=>c.type==="text")?.text || "[]";
-      setAiQuestions(JSON.parse(raw.replace(/```json|```/g,"").trim()));
-    } catch {
-      setAiQuestions([{ type:"mcq", text:"What is the square of the hypotenuse in a 3-4-5 right triangle?", options:["5","7","25","12"], answer:0, marks:2 }]);
+      const parsed = parseJsonLoose(content);
+      if (!Array.isArray(parsed) || !parsed.length) throw new Error("The AI returned an unexpected format. Try again.");
+      setAiQuestions(parsed);
+    } catch (e) {
+      showToast(e?.message || e?.data?.message || "Question generation failed. Check the AI configuration and try again.");
     }
     setLoading(false);
   }, [notes,qCount,qType,difficulty,subject,topic,customQ]);
@@ -2795,22 +2826,78 @@ const AITools = () => {
   const generateLesson = useCallback(async () => {
     setLoadingLesson(true); setLessonContent("");
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
-          messages:[{ role:"user", content:
-            `Write a detailed lesson note for Nigerian secondary school students.\nSubject: ${subject}. Topic: ${topic}. Class: ${lessonClass}.${customL?"\n\nAdditional instruction: "+customL:""}\n\nInclude: Learning Objectives, Introduction, Main Content with examples, Class Activities, Summary, Assignment. Use clear headings.`
-          }]
-        })
+      const { content } = await aiChat({
+        system:"You are an experienced Nigerian secondary-school teacher who writes clear, well-structured lesson notes using Markdown headings.",
+        prompt:`Write a detailed lesson note for Nigerian secondary school students.\nSubject: ${subject}. Topic: ${topic}. Class: ${lessonClass}.${customL?"\n\nAdditional instruction: "+customL:""}\n\nInclude these sections with clear headings: Learning Objectives, Introduction, Main Content (with worked examples), Class Activities, Summary, and Assignment.`,
+        temperature:0.7, max_tokens:3000,
       });
-      const data = await resp.json();
-      setLessonContent(data.content?.find(c=>c.type==="text")?.text || "");
-    } catch {
-      setLessonContent(`# ${topic}\n**Subject:** ${subject} | **Class:** ${lessonClass}\n\n**Learning Objectives:**\nBy the end of this lesson, students should be able to...\n\n**Introduction:**\nIn this lesson, we will explore ${topic}...`);
+      if (!content?.trim()) throw new Error("The AI returned an empty response. Try again.");
+      setLessonContent(content);
+    } catch (e) {
+      showToast(e?.message || e?.data?.message || "Lesson note generation failed. Check the AI configuration and try again.");
     }
     setLoadingLesson(false);
   }, [subject,topic,lessonClass,customL]);
+
+  const generateRubric = useCallback(async () => {
+    setLoadingRub(true); setRubContent("");
+    try {
+      const { content } = await aiChat({
+        system:"You are an expert assessment designer for Nigerian secondary schools. Produce clear marking rubrics in Markdown: a table of weighted criteria with short descriptors for each performance band (Excellent / Good / Fair / Poor) and the marks per band, ending with the total.",
+        prompt:`Create a detailed marking rubric.\nAssessment: ${subject} — ${topic || "General"}. Type: ${rubType}. Total marks: ${rubMarks}.\n\nBreak the total marks into weighted criteria and show how marks are awarded across the performance bands. Make sure the criteria marks add up to ${rubMarks}.`,
+        temperature:0.6, max_tokens:2000,
+      });
+      if (!content?.trim()) throw new Error("The AI returned an empty response. Try again.");
+      setRubContent(content);
+    } catch (e) { showToast(e?.message || e?.data?.message || "Rubric generation failed."); }
+    setLoadingRub(false);
+  }, [subject, topic, rubType, rubMarks]);
+
+  const sendChat = useCallback(async () => {
+    const text = chatInput.trim();
+    if (!text || chatBusy) return;
+    const next = [...chatMsgs, { role:"user", content:text }];
+    setChatMsgs(next); setChatInput(""); setChatBusy(true);
+    try {
+      const { content } = await aiChat({
+        system:"You are LearnersForge Assistant, a helpful assistant for teachers and administrators of a Nigerian secondary school. Help with teaching, lesson ideas, explaining concepts, drafting messages to parents, and school administration. Be concise, warm and practical.",
+        messages: next.map(m => ({ role:m.role, content:m.content })),
+        temperature:0.7, max_tokens:1500,
+      });
+      setChatMsgs(m => [...m, { role:"assistant", content: content || "…" }]);
+    } catch (e) {
+      setChatMsgs(m => [...m, { role:"assistant", content:"⚠️ " + (e?.message || e?.data?.message || "Request failed.") }]);
+    }
+    setChatBusy(false);
+  }, [chatInput, chatBusy, chatMsgs]);
+
+  // Insights: load class + term lists once, and the roster when a class is picked.
+  useEffect(() => {
+    getClasses().then(r => setInsClasses(arrOf(r))).catch(() => {});
+    getTerms().then(r => { const l = arrOf(r); setInsTerms(l); if (l.length) setInsTerm(String(l[l.length-1].id)); }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!insClass) { setInsStudents([]); setInsStudent(""); return; }
+    getStudents({ class_id:insClass, per_page:100 }).then(r => setInsStudents(arrOf(r, "students").map(normStudent))).catch(() => setInsStudents([]));
+  }, [insClass]);
+
+  const generateInsights = useCallback(async () => {
+    if (!insStudent || !insTerm) { showToast("Pick a class, student and term first."); return; }
+    setLoadingIns(true); setInsContent("");
+    try {
+      const rc = await getReportCard(insStudent, Number(insTerm)).then(r => r?.data ?? r);
+      const rows = (rc?.subjects || []).map(s => `${s.subject}: total ${s.total}/100, grade ${s.grade}, position ${s.position} (class high ${s.highest}, low ${s.lowest})`).join("\n");
+      const stu  = insStudents.find(s => String(s.id) === String(insStudent));
+      const { content } = await aiChat({
+        system:"You are an experienced Nigerian secondary-school academic advisor. Analyse a student's results and give a concise, encouraging, actionable report for the teacher, using short Markdown sections: Overview, Strengths, Areas to Improve, and Recommended Actions.",
+        prompt:`Student: ${stu?.name || rc?.student?.name || "Student"} — Class ${rc?.student?.class_name || stu?.class || ""}, ${rc?.term?.name || "this term"}.\n\nSubject results:\n${rows || "No subject scores available."}\n\nOverall: ${rc?.overall?.percentage ?? "n/a"}% (grade ${rc?.overall?.grade ?? "n/a"}), position ${rc?.overall?.position ?? "n/a"} of ${rc?.class_size ?? "n/a"}. Class highest ${rc?.overall?.class_highest ?? "n/a"}%, class lowest ${rc?.overall?.class_lowest ?? "n/a"}%.\n\nWrite the analysis.`,
+        temperature:0.6, max_tokens:1600,
+      });
+      if (!content?.trim()) throw new Error("The AI returned an empty response.");
+      setInsContent(content);
+    } catch (e) { showToast(e?.message || e?.data?.message || "Insights generation failed."); }
+    setLoadingIns(false);
+  }, [insStudent, insTerm, insStudents]);
 
   const handleMapToExam = () => {
     if (!mapExam) return;
@@ -2825,10 +2912,10 @@ const AITools = () => {
       )}
       <div style={{ display:"flex", gap:12, alignItems:"center", padding:"13px 18px", background:"linear-gradient(135deg,#0D1B2A 0%,#1A2E45 100%)", borderRadius:12, marginBottom:18, border:`1px solid ${C.accent}30` }}>
         <div style={{ width:42, height:42, borderRadius:11, background:C.accent+"22", border:`2px solid ${C.accent}`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22 }}>🤖</div>
-        <div><div style={{ color:"#fff", fontSize:15, fontWeight:700 }}>AI Teaching Assistant</div><div style={{ color:"#8DA4C0", fontSize:11, marginTop:2 }}>Generate questions from notes, create lesson plans — powered by Claude AI</div></div>
+        <div><div style={{ color:"#fff", fontSize:15, fontWeight:700 }}>AI Teaching Assistant</div><div style={{ color:"#8DA4C0", fontSize:11, marginTop:2 }}>Questions, lesson notes, rubrics, insights & chat — powered by z.ai (GLM)</div></div>
         <div style={{ marginLeft:"auto" }}><Badge color="green">AI Powered</Badge></div>
       </div>
-      <Tabs tabs={[{id:"qgen",label:"📝 Question Generator"},{id:"lesson",label:"📖 Lesson Note Creator"},{id:"rubric",label:"📋 Rubric Builder"}]} active={tab} onChange={setTab}/>
+      <Tabs tabs={[{id:"qgen",label:"📝 Question Generator"},{id:"lesson",label:"📖 Lesson Note Creator"},{id:"rubric",label:"📋 Rubric Builder"},{id:"insights",label:"📊 Performance Insights"},{id:"chat",label:"💬 Assistant"}]} active={tab} onChange={setTab}/>
 
       <div style={{ marginTop:16 }}>
         {/* ── QUESTION GENERATOR ── */}
@@ -2959,8 +3046,88 @@ const AITools = () => {
           </div>
         )}
 
+        {/* ── RUBRIC BUILDER ── */}
         {tab==="rubric" && (
-          <Card><div style={{ textAlign:"center", padding:"60px 16px" }}><div style={{ fontSize:34, marginBottom:12 }}>📋</div><div style={{ fontSize:16, fontWeight:700, marginBottom:7 }}>AI Rubric Builder</div><div style={{ fontSize:13, color:C.textMid, marginBottom:20 }}>Generate marking schemes for essay and practical assessments</div><Btn variant="primary">Coming in next sprint</Btn></div></Card>
+          <div style={{ display:"grid", gridTemplateColumns:"310px 1fr", gap:16 }}>
+            <Card>
+              <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Rubric Details</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                <Sel label="Subject" value={subject} onChange={setSubject} options={SUBJECTS.map(s=>({value:s,label:s}))}/>
+                <Input label="Assessment / Topic" value={topic} onChange={setTopic} placeholder="e.g. Essay on Deforestation"/>
+                <Sel label="Assessment Type" value={rubType} onChange={setRubType} options={[{value:"essay",label:"Essay"},{value:"practical",label:"Practical"},{value:"project",label:"Project"},{value:"oral",label:"Oral / Presentation"},{value:"lab-report",label:"Lab Report"}]}/>
+                <Sel label="Total Marks" value={rubMarks} onChange={setRubMarks} options={["10","20","30","40","50","100"].map(n=>({value:n,label:n+" marks"}))}/>
+                <Btn onClick={generateRubric} disabled={loadingRub||!topic.trim()} variant="primary" style={{ justifyContent:"center" }}>
+                  {loadingRub ? "⟳ Building…" : "🤖 Generate Rubric"}
+                </Btn>
+              </div>
+            </Card>
+            <Card>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:13 }}>
+                <div style={{ fontSize:13, fontWeight:700 }}>Generated Rubric</div>
+                {rubContent && <Badge color="green">AI Generated</Badge>}
+              </div>
+              {loadingRub && <div style={{ textAlign:"center", padding:"40px 16px", color:C.textMid, fontSize:12 }}><div style={{ fontSize:22, marginBottom:6 }}>🤖</div>Building marking scheme…</div>}
+              {!loadingRub && !rubContent && <div style={{ textAlign:"center", padding:"60px 16px", color:C.textMuted }}><div style={{ fontSize:34, marginBottom:10 }}>📋</div><div style={{ fontSize:13 }}>Fill in the details and click Generate</div></div>}
+              {!loadingRub && rubContent && <div style={{ padding:"13px 16px", background:"#F8FAFC", borderRadius:9, minHeight:300, fontSize:13, lineHeight:1.8, whiteSpace:"pre-wrap", overflow:"auto", maxHeight:540 }}>{rubContent}</div>}
+            </Card>
+          </div>
+        )}
+
+        {/* ── PERFORMANCE INSIGHTS ── */}
+        {tab==="insights" && (
+          <div style={{ display:"grid", gridTemplateColumns:"310px 1fr", gap:16 }}>
+            <Card>
+              <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Analyse a Student</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                <Sel label="Class" value={insClass} onChange={setInsClass} options={[{value:"",label:"— Select class —"}, ...insClasses.map(c=>({value:String(c.id),label:c.name}))]}/>
+                <Sel label="Student" value={insStudent} onChange={setInsStudent} options={[{value:"",label: insClass ? "— Select student —" : "Pick a class first"}, ...insStudents.map(s=>({value:String(s.id),label:s.name}))]}/>
+                <Sel label="Term" value={insTerm} onChange={setInsTerm} options={insTerms.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))}/>
+                <Btn onClick={generateInsights} disabled={loadingIns||!insStudent||!insTerm} variant="primary" style={{ justifyContent:"center" }}>
+                  {loadingIns ? "⟳ Analysing…" : "🤖 Generate Insights"}
+                </Btn>
+                <div style={{ fontSize:11, color:C.textMuted, lineHeight:1.5 }}>Analyses the student's term results — strengths, weak subjects and suggested next steps for the teacher.</div>
+              </div>
+            </Card>
+            <Card>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:13 }}>
+                <div style={{ fontSize:13, fontWeight:700 }}>Performance Analysis</div>
+                {insContent && <Badge color="green">AI Generated</Badge>}
+              </div>
+              {loadingIns && <div style={{ textAlign:"center", padding:"40px 16px", color:C.textMid, fontSize:12 }}><div style={{ fontSize:22, marginBottom:6 }}>📊</div>Reading the results…</div>}
+              {!loadingIns && !insContent && <div style={{ textAlign:"center", padding:"60px 16px", color:C.textMuted }}><div style={{ fontSize:34, marginBottom:10 }}>📊</div><div style={{ fontSize:13 }}>Select a student and click Generate</div></div>}
+              {!loadingIns && insContent && <div style={{ padding:"13px 16px", background:"#F8FAFC", borderRadius:9, minHeight:300, fontSize:13, lineHeight:1.8, whiteSpace:"pre-wrap", overflow:"auto", maxHeight:540 }}>{insContent}</div>}
+            </Card>
+          </div>
+        )}
+
+        {/* ── CHAT ASSISTANT ── */}
+        {tab==="chat" && (
+          <Card style={{ display:"flex", flexDirection:"column", height:"60vh", minHeight:420, padding:0 }}>
+            <div style={{ flex:1, overflowY:"auto", padding:"16px 18px", display:"flex", flexDirection:"column", gap:12 }}>
+              {chatMsgs.length===0 && (
+                <div style={{ textAlign:"center", margin:"auto", color:C.textMuted, maxWidth:380 }}>
+                  <div style={{ fontSize:34, marginBottom:10 }}>💬</div>
+                  <div style={{ fontSize:14, fontWeight:700, color:C.textMid, marginBottom:6 }}>Ask the assistant anything</div>
+                  <div style={{ fontSize:12, lineHeight:1.6 }}>Lesson ideas, explain a concept for a class, draft a message to parents, plan an activity…</div>
+                </div>
+              )}
+              {chatMsgs.map((m,i) => (
+                <div key={i} style={{ alignSelf: m.role==="user"?"flex-end":"flex-start", maxWidth:"78%",
+                  background: m.role==="user"?C.accent:"#F1F5F9", color: m.role==="user"?"#fff":C.text,
+                  padding:"9px 13px", borderRadius:12, fontSize:13, lineHeight:1.6, whiteSpace:"pre-wrap" }}>{m.content}</div>
+              ))}
+              {chatBusy && <div style={{ alignSelf:"flex-start", background:"#F1F5F9", color:C.textMuted, padding:"9px 13px", borderRadius:12, fontSize:13 }}>⟳ Thinking…</div>}
+            </div>
+            <div style={{ borderTop:`1px solid ${C.border}`, padding:"12px 14px", display:"flex", gap:9, alignItems:"flex-end" }}>
+              <textarea value={chatInput} onChange={e=>setChatInput(e.target.value)}
+                onKeyDown={e=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); sendChat(); } }}
+                placeholder="Type a message… (Enter to send, Shift+Enter for a new line)"
+                rows={1} style={{ flex:1, padding:"10px 12px", borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, resize:"none", maxHeight:120, outline:"none", fontFamily:"Sora,sans-serif", lineHeight:1.5, color:C.text }}
+                onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
+              <Btn variant="primary" onClick={sendChat} disabled={chatBusy||!chatInput.trim()}>Send</Btn>
+              {chatMsgs.length>0 && <Btn variant="secondary" onClick={()=>setChatMsgs([])}>Clear</Btn>}
+            </div>
+          </Card>
         )}
       </div>
 

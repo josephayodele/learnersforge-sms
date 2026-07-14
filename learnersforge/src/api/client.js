@@ -79,6 +79,11 @@ export const getTermAttendance  = (class_id, term_id) =>
 export const saveTermAttendance = (class_id, term_id, records) =>
   api.post('/attendance/term-summary', { class_id, term_id, records });
 
+// ── AI (z.ai proxy — key stays server-side) ─────────────────────────────────────
+// Generic completion: pass { prompt, system?, messages?, model?, temperature?, max_tokens? }.
+// Returns { content, model, usage }.
+export const aiChat = payload => api.post('/ai/chat', payload).then(r => r?.data ?? r);
+
 // ── Grades ────────────────────────────────────────────────────────────────────
 export const getCaTypes     = () => api.get('/ca-types');
 export const getGrades      = (params = {}) => api.get('/grades', { params });

@@ -10,6 +10,8 @@ vendor/
 !.env.*.example
 # Real DB credentials live only on the server; commit the .example instead.
 backend/config/database.php
+# Real z.ai API key lives only on the server; commit the .example instead.
+backend/config/ai.php
 
 # ── Logs / OS cruft ────────────────────────────────────────────
 *.log

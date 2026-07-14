@@ -1,0 +1,11 @@
+<?php
+// config/ai.php  — z.ai (Zhipu GLM) credentials for the AI features.
+// Copy this file to config/ai.php on the server and fill in the real API key.
+// The real config/ai.php is git-ignored and is never overwritten by a deploy.
+return [
+    'provider' => 'zai',
+    'base_url' => 'https://api.z.ai/api/paas/v4',
+    'api_key'  => 'YOUR_ZAI_API_KEY_HERE',   // format: <id>.<secret>
+    'model'    => 'glm-4.6',                  // default model; requests may override
+    'timeout'  => 60,                         // seconds
+];

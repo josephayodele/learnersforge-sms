@@ -316,6 +316,10 @@ try {
     } elseif ($path === '/api/v1/settings/school' && ($method === 'PUT' || $method === 'POST')) {
         SettingsController::updateSchool(authGuard());
 
+    // ── AI (z.ai proxy) ─────────────────────────────────────────────────────────
+    } elseif ($path === '/api/v1/ai/chat' && $method === 'POST') {
+        AIController::chat(authGuard());
+
     // ── Utilities ─────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/classes' && $method === 'GET') {
         respond(DB::query(

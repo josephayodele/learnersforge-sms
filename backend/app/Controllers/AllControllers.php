@@ -1185,3 +1185,68 @@ class SettingsController {
         respond(DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system FROM schools WHERE id=?',[$sid]),200,'Settings saved');
     }
 }
+
+// ─── AIController ─────────────────────────────────────────────────────────────
+// Server-side proxy to z.ai (Zhipu GLM). The API key lives only in config/ai.php
+// (git-ignored, created on the server) so it is never exposed to the browser.
+// One generic OpenAI-compatible chat endpoint powers every AI feature:
+// question generator, lesson notes, rubric builder, chat assistant, insights.
+class AIController {
+    private static function config(): array {
+        $path = dirname(__DIR__, 2) . '/config/ai.php';
+        if (!is_file($path)) respond(null, 503, 'AI is not configured on the server (config/ai.php missing).');
+        return require $path;
+    }
+
+    public static function chat(array $user): void {
+        $cfg = self::config();
+        if (empty($cfg['api_key']) || $cfg['api_key'] === 'YOUR_ZAI_API_KEY_HERE') {
+            respond(null, 503, 'AI API key is not set on the server.');
+        }
+
+        $b = body();
+        // Accept either a full messages array or a single prompt (+ optional system).
+        $messages = $b['messages'] ?? null;
+        if (!is_array($messages) || !$messages) {
+            $prompt = trim((string)($b['prompt'] ?? ''));
+            if ($prompt === '') respond(null, 422, 'prompt or messages required');
+            $messages = [];
+            if (!empty($b['system'])) $messages[] = ['role' => 'system', 'content' => (string)$b['system']];
+            $messages[] = ['role' => 'user', 'content' => $prompt];
+        }
+
+        $payload = [
+            'model'       => $b['model'] ?? $cfg['model'] ?? 'glm-4.6',
+            'messages'    => $messages,
+            'temperature' => isset($b['temperature']) ? (float)$b['temperature'] : 0.7,
+            'max_tokens'  => isset($b['max_tokens']) ? min(8000, max(1, (int)$b['max_tokens'])) : 2048,
+        ];
+
+        $url = rtrim($cfg['base_url'], '/') . '/chat/completions';
+        $ch  = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => json_encode($payload),
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $cfg['api_key'],
+            ],
+            CURLOPT_TIMEOUT        => (int)($cfg['timeout'] ?? 60),
+            CURLOPT_CONNECTTIMEOUT => 15,
+        ]);
+        $res  = curl_exec($ch);
+        $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
+
+        if ($res === false) respond(null, 502, 'AI request failed: ' . $err);
+        $json = json_decode($res, true);
+        if ($http >= 400) {
+            $msg = $json['error']['message'] ?? $json['message'] ?? ('AI provider returned HTTP ' . $http);
+            respond(null, 502, is_string($msg) ? $msg : 'AI provider error');
+        }
+        $content = $json['choices'][0]['message']['content'] ?? '';
+        respond(['content' => $content, 'model' => $payload['model'], 'usage' => $json['usage'] ?? null]);
+    }
+}
