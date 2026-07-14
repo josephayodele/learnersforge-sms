@@ -229,7 +229,7 @@ try {
         TimetableController::save(authGuard());
 
     // ── Exams / CBT ───────────────────────────────────────────────────────────
-    } elseif ($path === '/api/v1/exams' && $method === 'GET') {
+    } elseif ($path === '/api/v1/exams' && !$id && $method === 'GET') {
         ExamController::index(authGuard());
 
     } elseif ($path === '/api/v1/exams' && $method === 'POST') {
@@ -240,6 +240,9 @@ try {
 
     } elseif ($path === '/api/v1/exams' && $id && $method === 'PUT') {
         ExamController::update(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/exams' && $id && $method === 'DELETE') {
+        ExamController::destroy(authGuard(), $id);
 
     } elseif ($path === '/api/v1/exams/submit' && $method === 'POST') {
         ExamController::submit(authGuard());

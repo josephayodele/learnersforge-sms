@@ -991,6 +991,21 @@ class ExamController {
         respond(['submitted'=>true]);
     }
 
+    // Delete an exam (admin only) and its questions + submissions.
+    public static function destroy(array $user, int $id): void {
+        if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can delete exams.');
+        $exam = DB::one('SELECT id FROM exams WHERE id=? AND school_id=?', [$id, (int)$user['school_id']]);
+        if (!$exam) respond(null, 404, 'Exam not found');
+        DB::conn()->beginTransaction();
+        try {
+            DB::run('DELETE FROM exam_submissions WHERE exam_id=?', [$id]);   // no cascade on this FK
+            DB::run('DELETE FROM exam_questions  WHERE exam_id=?', [$id]);
+            DB::run('DELETE FROM exams WHERE id=?', [$id]);
+            DB::conn()->commit();
+        } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
+        respond(['deleted' => true]);
+    }
+
     // Append questions (e.g. from the AI generator) to an existing exam, continuing
     // the sort order, then keep total_marks in sync with the question marks.
     public static function addQuestions(array $user, int $id): void {

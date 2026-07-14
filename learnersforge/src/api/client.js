@@ -126,6 +126,7 @@ export const createExam  = data => api.post('/exams', data);
 export const updateExam  = (id, data) => api.put(`/exams/${id}`, data);
 export const submitExam  = data => api.post('/exams/submit', data);
 export const addExamQuestions = (id, questions) => api.post(`/exams/${id}/questions`, { questions });
+export const deleteExam  = id => api.delete(`/exams/${id}`);
 
 // ── Inventory ─────────────────────────────────────────────────────────────────
 export const getInventory    = (category = '') =>

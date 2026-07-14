@@ -6,7 +6,7 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
          getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
-         getExams, getExam, addExamQuestions, login as apiLogin } from "./api/client";
+         getExams, getExam, addExamQuestions, deleteExam, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -173,18 +173,6 @@ const STAFF = [
 const SUBJECTS  = ["Mathematics","English Language","Biology","Physics","Chemistry","History","Geography","Agricultural Science","Civic Education","Computer Studies"];
 const CLASSES   = ["JSS 1A","JSS 1B","JSS 2A","JSS 2B","JSS 3A","JSS 3B","SSS 1A","SSS 1B","SSS 2A","SSS 2B","SSS 3A","SSS 3B"];
 const DAYS      = ["Monday","Tuesday","Wednesday","Thursday","Friday"];
-const EXAMS     = [
-  {id:"EX001",title:"Mathematics Mid-Term",class:"SSS 2",duration:60,questions:30,status:"Active",  type:"MCQ"},
-  {id:"EX002",title:"English Comprehension",class:"JSS 3",duration:45,questions:20,status:"Draft",  type:"Mixed"},
-  {id:"EX003",title:"Biology Theory",       class:"SSS 3",duration:90,questions:15,status:"Completed",type:"Essay"},
-];
-const CBT_QS = [
-  {id:1,type:"mcq",  marks:2,text:"Which formula gives the area of a circle?",options:["A=πr²","A=2πr","A=πd","A=r²"],answer:0},
-  {id:2,type:"mcq",  marks:2,text:"What is the value of √144?",options:["11","12","13","14"],answer:1},
-  {id:3,type:"short",marks:5,text:"Define the Pythagorean theorem and write its formula.",answer:""},
-];
-
-
 const BRANCHES=[{id:"B001",name:"Greenfield Academy – Lekki",students:1284,staff:68,active:true},{id:"B002",name:"Greenfield Academy – Surulere",students:890,staff:52,active:true},{id:"B003",name:"Greenfield Academy – Abuja",students:640,staff:41,active:false}];
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -2478,7 +2466,16 @@ const CBTExams = ({ onNav, onOpenExam }) => {
   const [exams,   setExams]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter,  setFilter]  = useState("All");
-  useEffect(() => { getExams().then(r => setExams(arrOf(r))).catch(() => setExams([])).finally(() => setLoading(false)); }, []);
+  const [busyId,  setBusyId]  = useState(null);
+  const load = () => getExams().then(r => setExams(arrOf(r))).catch(() => setExams([])).finally(() => setLoading(false));
+  useEffect(() => { load(); }, []);
+  const del = async (exam) => {
+    if (!window.confirm(`Delete "${exam.title}"? This removes the exam and its questions permanently.`)) return;
+    setBusyId(exam.id);
+    try { await deleteExam(exam.id); setExams(p => p.filter(e => e.id !== exam.id)); }
+    catch (e) { window.alert(e?.message || e?.data?.message || "Could not delete this exam."); }
+    finally { setBusyId(null); }
+  };
   const shown = exams.filter(e => filter === "All" || (e.status || "").toLowerCase() === filter.toLowerCase());
   return (
   <div className="fi">
@@ -2507,7 +2504,12 @@ const CBTExams = ({ onNav, onOpenExam }) => {
         <Card key={exam.id} onClick={() => onOpenExam(exam.id)}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
             <div style={{ width:42, height:42, borderRadius:10, background:C.navy, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>💻</div>
-            <Badge color={st==="active"?"green":st==="draft"?"amber":"gray"}>{st.charAt(0).toUpperCase()+st.slice(1)}</Badge>
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <Badge color={st==="active"?"green":st==="draft"?"amber":"gray"}>{st.charAt(0).toUpperCase()+st.slice(1)}</Badge>
+              <button title="Delete exam" disabled={busyId===exam.id}
+                onClick={e => { e.stopPropagation(); del(exam); }}
+                style={{ border:"none", background:"transparent", cursor:"pointer", fontSize:14, opacity:busyId===exam.id?0.4:0.75, lineHeight:1 }}>🗑</button>
+            </div>
           </div>
           <div style={{ fontSize:14, fontWeight:700, marginBottom:3 }}>{exam.title}</div>
           <div style={{ fontSize:11, color:C.textMuted, marginBottom:12 }}>{[exam.class_name, exam.subject_name, exam.exam_type].filter(Boolean).join(" · ")}</div>
