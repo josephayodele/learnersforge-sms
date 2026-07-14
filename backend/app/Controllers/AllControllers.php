@@ -995,6 +995,98 @@ class ExamController {
         respond(['submitted'=>true]);
     }
 
+    // Grading permission: admin, the exam creator, the class's form teacher,
+    // or a teacher of the exam's subject in that class.
+    private static function assertCanGrade(array $user, array $exam): void {
+        if (Perm::isAdmin($user)) return;
+        if ((int)($exam['created_by'] ?? 0) === (int)$user['id']) return;
+        if (Perm::canManageClass($user, (int)$exam['class_id'])) return;
+        if (Perm::teachesSubjectInClass($user, (int)$exam['class_id'], (int)$exam['subject_id'])) return;
+        respond(null, 403, 'You are not permitted to grade this exam.');
+    }
+
+    // All submissions for an exam (teacher/admin), with student + score info.
+    public static function submissions(array $user, int $examId): void {
+        $exam = DB::one('SELECT * FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
+        if (!$exam) respond(null, 404, 'Exam not found');
+        self::assertCanGrade($user, $exam);
+        $meta = DB::one('SELECT e.id,e.title,e.exam_type,e.total_marks,e.show_score,e.results_released,c.name AS class_name,sub.name AS subject_name
+                         FROM exams e JOIN classes c ON c.id=e.class_id JOIN subjects sub ON sub.id=e.subject_id WHERE e.id=?', [$examId]);
+        $meta['has_subjective'] = (bool)DB::one('SELECT 1 x FROM exam_questions WHERE exam_id=? AND type IN ("short","essay","fill") LIMIT 1', [$examId]);
+        $subs = DB::query(
+            'SELECT es.id,es.score,es.max_score,es.needs_review,es.submitted_at,es.time_taken,
+                    u.first_name,u.last_name, st.student_id AS admission_no
+             FROM exam_submissions es JOIN students st ON st.id=es.student_id JOIN users u ON u.id=st.user_id
+             WHERE es.exam_id=? ORDER BY u.last_name,u.first_name', [$examId]);
+        respond(['exam' => $meta, 'submissions' => $subs]);
+    }
+
+    // One submission with every question, the student's answer, and marks —
+    // objective questions auto-marked, subjective ones showing awarded marks.
+    public static function submissionDetail(array $user, int $subId): void {
+        $sub = DB::one(
+            'SELECT es.*, u.first_name,u.last_name, st.student_id AS admission_no
+             FROM exam_submissions es JOIN students st ON st.id=es.student_id JOIN users u ON u.id=st.user_id
+             WHERE es.id=?', [$subId]);
+        if (!$sub) respond(null, 404, 'Submission not found');
+        $exam = DB::one('SELECT * FROM exams WHERE id=? AND school_id=?', [(int)$sub['exam_id'], (int)$user['school_id']]);
+        if (!$exam) respond(null, 404, 'Exam not found');
+        self::assertCanGrade($user, $exam);
+
+        $answers = json_decode($sub['answers'] ?? '[]', true) ?: [];
+        $subjScores = json_decode($sub['subjective_scores'] ?? 'null', true) ?: [];
+        $questions = DB::query('SELECT id,type,question,options,answer,marks FROM exam_questions WHERE exam_id=? ORDER BY sort_order', [(int)$sub['exam_id']]);
+        foreach ($questions as &$q) {
+            $ans = $answers[$q['id']] ?? null;
+            $q['student_answer'] = $ans;
+            $q['options'] = json_decode($q['options'] ?? 'null', true);
+            if (in_array($q['type'], ['mcq','tf'], true)) {
+                $q['objective']  = true;
+                $q['is_correct'] = StudentPortalController::isCorrect($q, $ans);
+                $q['awarded']    = $q['is_correct'] ? (int)$q['marks'] : 0;
+            } else {
+                $q['objective'] = false;
+                $q['awarded']   = isset($subjScores[$q['id']]) ? (float)$subjScores[$q['id']] : null;
+            }
+        }
+        respond([
+            'submission' => [
+                'id' => (int)$sub['id'], 'exam_id' => (int)$sub['exam_id'],
+                'student' => trim($sub['first_name'].' '.$sub['last_name']), 'admission_no' => $sub['admission_no'],
+                'score' => $sub['score'], 'max_score' => $sub['max_score'], 'needs_review' => (int)$sub['needs_review'],
+                'submitted_at' => $sub['submitted_at'], 'time_taken' => (int)$sub['time_taken'],
+                'exam_title' => $exam['title'],
+            ],
+            'questions' => $questions,
+        ]);
+    }
+
+    // Save teacher-awarded marks for subjective questions; recompute the total.
+    public static function gradeSubmission(array $user, int $subId): void {
+        $sub = DB::one('SELECT * FROM exam_submissions WHERE id=?', [$subId]);
+        if (!$sub) respond(null, 404, 'Submission not found');
+        $exam = DB::one('SELECT * FROM exams WHERE id=? AND school_id=?', [(int)$sub['exam_id'], (int)$user['school_id']]);
+        if (!$exam) respond(null, 404, 'Exam not found');
+        self::assertCanGrade($user, $exam);
+
+        $scores    = body()['scores'] ?? [];                       // { question_id: marks }
+        $answers   = json_decode($sub['answers'] ?? '[]', true) ?: [];
+        $questions = DB::query('SELECT id,type,options,answer,marks FROM exam_questions WHERE exam_id=?', [(int)$sub['exam_id']]);
+        $objective = 0.0; $subjective = 0.0; $clean = [];
+        foreach ($questions as $q) {
+            if (in_array($q['type'], ['mcq','tf'], true)) {
+                if (StudentPortalController::isCorrect($q, $answers[$q['id']] ?? null)) $objective += (int)$q['marks'];
+            } else {
+                $m = isset($scores[$q['id']]) ? max(0.0, min((float)$q['marks'], (float)$scores[$q['id']])) : 0.0;
+                $subjective += $m; $clean[$q['id']] = $m;
+            }
+        }
+        $final = $objective + $subjective;
+        DB::run('UPDATE exam_submissions SET score=?, subjective_scores=?, needs_review=0 WHERE id=?',
+            [$final, json_encode($clean), $subId]);
+        respond(['score' => $final, 'objective' => $objective, 'subjective' => $subjective]);
+    }
+
     // Delete an exam (admin only) and its questions + submissions.
     public static function destroy(array $user, int $id): void {
         if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can delete exams.');
@@ -1404,7 +1496,7 @@ class StudentPortalController {
     }
 
     // Robustly compare a student's answer to the stored correct answer.
-    private static function isCorrect(array $q, $ans): bool {
+    public static function isCorrect(array $q, $ans): bool {
         if ($ans === null || $ans === '') return false;
         $correct = trim((string)($q['answer'] ?? ''));
         if ($correct === '') return false;

@@ -250,6 +250,16 @@ try {
     } elseif (preg_match('#^/api/v1/exams/(\d+)/questions$#', $path, $mex) && $method === 'POST') {
         ExamController::addQuestions(authGuard(), (int)$mex[1]);
 
+    // Teacher grading / results (submissions keyed by their own id at top level).
+    } elseif (preg_match('#^/api/v1/exams/(\d+)/submissions$#', $path, $msub) && $method === 'GET') {
+        ExamController::submissions(authGuard(), (int)$msub[1]);
+
+    } elseif ($path === '/api/v1/submissions' && $id && $method === 'GET') {
+        ExamController::submissionDetail(authGuard(), $id);
+
+    } elseif (preg_match('#^/api/v1/submissions/(\d+)/grade$#', $path, $mg) && $method === 'POST') {
+        ExamController::gradeSubmission(authGuard(), (int)$mg[1]);
+
     // ── Student portal (exam taking) ────────────────────────────────────────────
     // Note: the router strips a trailing numeric id, so /my/exams/5 arrives as
     // path=/api/v1/my/exams with $id=5.

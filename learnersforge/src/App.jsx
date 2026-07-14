@@ -7,6 +7,7 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
          getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
+         getExamSubmissions, getSubmission, gradeSubmission,
          getMyExams, getMyExam, submitMyExam, getMyResults, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
@@ -2463,7 +2464,7 @@ const Timetable = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CBT EXAMS LIST
 // ═══════════════════════════════════════════════════════════════════════════════
-const CBTExams = ({ onNav, onOpenExam }) => {
+const CBTExams = ({ onNav, onOpenExam, onOpenResults }) => {
   const [exams,   setExams]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter,  setFilter]  = useState("All");
@@ -2528,6 +2529,7 @@ const CBTExams = ({ onNav, onOpenExam }) => {
             {!exam.show_score && !exam.results_released && (
               <Btn size="sm" variant="ghost" disabled={busyId===exam.id} onClick={e => { e.stopPropagation(); release(exam); }}>📣 Release</Btn>
             )}
+            <Btn size="sm" variant="ghost" onClick={e => { e.stopPropagation(); onOpenResults(exam.id); }}>📊 Results</Btn>
             <Btn size="sm" variant="secondary" onClick={e => { e.stopPropagation(); onOpenExam(exam.id); }}>Take / Preview</Btn>
           </div>
         </Card>
@@ -2914,6 +2916,165 @@ const CBTTake = ({ onNav, examId, onOpenExam }) => {
           </div>
         </Card>
       </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CBT RESULTS & GRADING  — teacher views submissions and grades subjective answers
+// ═══════════════════════════════════════════════════════════════════════════════
+const CBTResults = ({ examId, onNav }) => {
+  const [meta,    setMeta]    = useState(null);
+  const [subs,    setSubs]    = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err,     setErr]     = useState("");
+  const [detail,  setDetail]  = useState(null);   // { submission, questions } when grading one
+  const [marks,   setMarks]   = useState({});     // question_id -> awarded (subjective)
+  const [saving,  setSaving]  = useState(false);
+  const [toast,   setToast]   = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 2800); };
+
+  const load = () => {
+    setLoading(true); setErr("");
+    getExamSubmissions(examId)
+      .then(r => { const d = r?.data ?? r; setMeta(d?.exam || null); setSubs(d?.submissions || []); })
+      .catch(e => setErr(e?.message || e?.data?.message || "Could not load results."))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, [examId]);
+
+  const openDetail = async (subId) => {
+    try {
+      const r = await getSubmission(subId);
+      const d = r?.data ?? r;
+      setDetail(d);
+      const init = {};
+      (d?.questions || []).filter(q => !q.objective).forEach(q => { init[q.id] = q.awarded ?? 0; });
+      setMarks(init);
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not open submission."); }
+  };
+
+  const saveGrades = async () => {
+    if (!detail) return;
+    setSaving(true);
+    try {
+      await gradeSubmission(detail.submission.id, marks);
+      flash("Grades saved.");
+      setDetail(null); load();
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not save grades."); }
+    finally { setSaving(false); }
+  };
+
+  const fmtVal = (q) => {
+    const a = q.student_answer;
+    if (a === null || a === undefined || a === "") return "—";
+    if (q.type === "mcq")  return Array.isArray(q.options) ? (q.options[a] ?? a) : a;
+    if (q.type === "tf")   return (a === 0 || a === "0") ? "True" : "False";
+    return String(a);
+  };
+
+  // ── Grading one submission ──
+  if (detail) {
+    const objective = (detail.questions || []).filter(q => q.objective).reduce((s,q) => s + (q.awarded||0), 0);
+    const subjective = Object.values(marks).reduce((s,m) => s + (Number(m)||0), 0);
+    return (
+      <div className="fi">
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <Btn onClick={() => setDetail(null)} variant="secondary" size="sm">← Back to submissions</Btn>
+          <div style={{ fontSize:13, color:C.textMid }}>
+            <strong>{detail.submission.student}</strong> · {detail.submission.admission_no} · {detail.submission.exam_title}
+          </div>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
+          {(detail.questions || []).map((q,i) => (
+            <Card key={q.id} style={{ borderLeft:`4px solid ${q.objective ? (q.is_correct?C.accent:C.coral) : C.purple}` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:"flex", gap:7, alignItems:"center", marginBottom:6 }}>
+                    <span style={{ fontSize:11, fontWeight:700, color:C.textMuted }}>Q{i+1}</span>
+                    <Badge color={q.type==="mcq"?"blue":q.type==="tf"?"amber":q.type==="essay"?"purple":"green"} size="sm">{(q.type||"").toUpperCase()}</Badge>
+                    <span style={{ fontSize:11, color:C.textMuted }}>{q.marks} mk</span>
+                  </div>
+                  <div style={{ fontSize:13, fontWeight:600, marginBottom:8 }}>{q.question}</div>
+                  <div style={{ fontSize:12, color:C.textMid }}>
+                    <span style={{ color:C.textMuted }}>Answer: </span>
+                    <span style={{ whiteSpace:"pre-wrap" }}>{fmtVal(q)}</span>
+                  </div>
+                  {q.objective && (
+                    <div style={{ fontSize:11, marginTop:5, color:q.is_correct?C.accentDark:C.coral, fontWeight:600 }}>
+                      {q.is_correct ? "✓ Correct" : "✗ Incorrect"} · correct: {q.type==="mcq" ? (Array.isArray(q.options) && !isNaN(q.answer) ? (q.options[q.answer] ?? q.answer) : q.answer) : (String(q.answer).match(/^(1|true|t|yes)$/i) ? "True" : String(q.answer).match(/^(0|false|f|no)$/i) ? "False" : q.answer)}
+                    </div>
+                  )}
+                </div>
+                <div style={{ textAlign:"center", minWidth:96 }}>
+                  {q.objective ? (
+                    <><div style={{ fontSize:18, fontWeight:700, color:q.is_correct?C.accentDark:C.textMuted }}>{q.awarded}/{q.marks}</div><div style={{ fontSize:9, color:C.textMuted }}>auto</div></>
+                  ) : (
+                    <>
+                      <div style={{ display:"flex", alignItems:"center", gap:4, justifyContent:"center" }}>
+                        <input type="number" min={0} max={q.marks} value={marks[q.id] ?? 0}
+                          onChange={e => setMarks(p => ({ ...p, [q.id]: Math.max(0, Math.min(Number(q.marks), Number(e.target.value)||0)) }))}
+                          style={{ width:52, padding:"6px 8px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, textAlign:"center", outline:"none", color:C.text }}/>
+                        <span style={{ fontSize:12, color:C.textMuted }}>/{q.marks}</span>
+                      </div>
+                      <div style={{ fontSize:9, color:C.amber, marginTop:3 }}>award marks</div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+        <div style={{ position:"sticky", bottom:0, marginTop:14, padding:"12px 16px", background:C.surface, border:`1px solid ${C.border}`, borderRadius:11, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ fontSize:13 }}>Total: <strong>{objective + subjective}</strong> / {detail.submission.max_score} <span style={{ color:C.textMuted, fontSize:11 }}>(objective {objective} + subjective {subjective})</span></div>
+          <Btn variant="primary" onClick={saveGrades} disabled={saving}>{saving ? "Saving…" : "💾 Save Grades"}</Btn>
+        </div>
+        {toast && <div style={{ position:"fixed", bottom:26, right:26, zIndex:2000, background:C.navy, color:"#fff", padding:"11px 18px", borderRadius:11, fontSize:12, fontWeight:600 }}>{toast}</div>}
+      </div>
+    );
+  }
+
+  // ── Submissions list ──
+  return (
+    <div className="fi">
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+        <Btn onClick={() => onNav("cbt")} variant="secondary" size="sm">← All Exams</Btn>
+        {meta && <div style={{ fontSize:14, fontWeight:700 }}>{meta.title} <span style={{ fontSize:11, fontWeight:400, color:C.textMuted }}>· {[meta.class_name, meta.subject_name].filter(Boolean).join(" · ")}</span></div>}
+      </div>
+      {loading ? (
+        <Card style={{ textAlign:"center", color:C.textMuted, fontSize:13, padding:"44px" }}>Loading submissions…</Card>
+      ) : err ? (
+        <Card style={{ textAlign:"center", color:C.coral, fontSize:13, padding:"40px" }}>{err}</Card>
+      ) : subs.length === 0 ? (
+        <Card style={{ textAlign:"center", padding:"48px 16px" }}><div style={{ fontSize:34, marginBottom:10 }}>📭</div><div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>No submissions yet</div><div style={{ fontSize:13, color:C.textMid }}>Results appear here once students submit this exam.</div></Card>
+      ) : (
+        <Card style={{ padding:0, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse" }}>
+            <thead><tr style={{ background:"#F8FAFC" }}>
+              {["Student","Student ID","Score","Status","Submitted",""].map((h,i) => (
+                <th key={h} style={{ padding:"10px 14px", textAlign:i>=2&&i<=3?"center":"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {subs.map(s => (
+                <tr key={s.id} style={{ borderTop:`1px solid ${C.border}` }}>
+                  <td style={{ padding:"10px 14px", fontSize:13, fontWeight:600 }}>{s.first_name} {s.last_name}</td>
+                  <td style={{ padding:"10px 14px", fontSize:12, color:C.textMid }}>{s.admission_no}</td>
+                  <td style={{ padding:"10px 14px", fontSize:13, fontWeight:700, textAlign:"center" }}>{s.score ?? "—"} / {s.max_score ?? "—"}</td>
+                  <td style={{ padding:"10px 14px", textAlign:"center" }}>
+                    <Badge color={s.needs_review ? "amber" : "green"} size="sm">{s.needs_review ? "Needs review" : "Graded"}</Badge>
+                  </td>
+                  <td style={{ padding:"10px 14px", fontSize:11, color:C.textMuted }}>{s.submitted_at ? new Date(s.submitted_at).toLocaleString() : "—"}</td>
+                  <td style={{ padding:"10px 14px", textAlign:"right" }}>
+                    <Btn size="sm" variant="secondary" onClick={() => openDetail(s.id)}>{s.needs_review ? "Grade" : "Review"}</Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+      {toast && <div style={{ position:"fixed", bottom:26, right:26, zIndex:2000, background:C.navy, color:"#fff", padding:"11px 18px", borderRadius:11, fontSize:12, fontWeight:600 }}>{toast}</div>}
     </div>
   );
 };
@@ -6129,6 +6290,7 @@ export default function App() {
   // always starts on the picker; openExam sets it directly and bypasses this.
   const go = p => { setExamId(null); setPage(p); };
   const openExam = id => { setExamId(id); setPage("cbt-take"); };
+  const openResults = id => { setExamId(id); setPage("cbt-results"); };
 
   useEffect(() => {
     const onUnauth = () => setAuthed(false);
@@ -6178,9 +6340,10 @@ export default function App() {
     attendance:  <Attendance/>,
     grades:      <Grades/>,
     timetable:   <Timetable/>,
-    cbt:         <CBTExams   onNav={go} onOpenExam={openExam}/>,
+    cbt:         <CBTExams   onNav={go} onOpenExam={openExam} onOpenResults={openResults}/>,
     "cbt-create":<CBTCreate  onNav={go}/>,
     "cbt-take":  <CBTTake    onNav={go} examId={examId} onOpenExam={openExam}/>,
+    "cbt-results":<CBTResults onNav={go} examId={examId}/>,
     "ai-tools":  <AITools/>,
     fees:        <Fees/>,
     messaging:   <Messaging/>,

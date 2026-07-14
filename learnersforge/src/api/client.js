@@ -128,6 +128,10 @@ export const submitExam  = data => api.post('/exams/submit', data);
 export const addExamQuestions = (id, questions) => api.post(`/exams/${id}/questions`, { questions });
 export const deleteExam  = id => api.delete(`/exams/${id}`);
 export const updateExamMeta = (id, data) => api.put(`/exams/${id}`, data);
+// Teacher grading / results
+export const getExamSubmissions = examId => api.get(`/exams/${examId}/submissions`);
+export const getSubmission      = subId  => api.get(`/submissions/${subId}`);
+export const gradeSubmission    = (subId, scores) => api.post(`/submissions/${subId}/grade`, { scores });
 
 // ── Student portal (exam taking) ────────────────────────────────────────────────
 export const getMyExams       = () => api.get('/my/exams');
