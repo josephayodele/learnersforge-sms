@@ -990,6 +990,30 @@ class ExamController {
             [(int)$b['exam_id'],(int)$b['student_id'],json_encode($b['answers']??[]),(int)($b['time_taken']??0)]);
         respond(['submitted'=>true]);
     }
+
+    // Append questions (e.g. from the AI generator) to an existing exam, continuing
+    // the sort order, then keep total_marks in sync with the question marks.
+    public static function addQuestions(array $user, int $id): void {
+        $exam = DB::one('SELECT id FROM exams WHERE id=? AND school_id=?', [$id, (int)$user['school_id']]);
+        if (!$exam) respond(null, 404, 'Exam not found');
+        $qs = body()['questions'] ?? [];
+        if (!$qs) respond(null, 422, 'No questions provided');
+
+        $allowed = ['mcq','short','essay','tf','fill'];
+        $next = (int)(DB::one('SELECT COALESCE(MAX(sort_order),-1)+1 AS n FROM exam_questions WHERE exam_id=?', [$id])['n'] ?? 0);
+        DB::conn()->beginTransaction();
+        try {
+            foreach ($qs as $q) {
+                $type = in_array(($q['type'] ?? ''), $allowed, true) ? $q['type'] : (isset($q['options']) ? 'mcq' : 'short');
+                DB::exec('INSERT INTO exam_questions (exam_id,type,question,options,answer,marks,sort_order) VALUES (?,?,?,?,?,?,?)',
+                    [$id, $type, (string)($q['question'] ?? ''), isset($q['options']) ? json_encode($q['options']) : null,
+                     isset($q['answer']) ? (string)$q['answer'] : null, (int)($q['marks'] ?? 2), $next++]);
+            }
+            DB::run('UPDATE exams SET total_marks=(SELECT COALESCE(SUM(marks),0) FROM exam_questions WHERE exam_id=?) WHERE id=?', [$id, $id]);
+            DB::conn()->commit();
+        } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
+        respond(['added' => count($qs)]);
+    }
 }
 
 // ─── InventoryController ──────────────────────────────────────────────────────

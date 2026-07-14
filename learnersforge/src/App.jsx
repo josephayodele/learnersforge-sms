@@ -5,7 +5,8 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
          getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
-         getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat, login as apiLogin } from "./api/client";
+         getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
+         getExams, addExamQuestions, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -1385,6 +1386,51 @@ const parseJsonLoose = raw => {
   const start = a >= 0 ? a : o, end = a >= 0 ? b : p;
   if (start >= 0 && end > start) { try { return JSON.parse(s.slice(start, end + 1)); } catch { /* noop */ } }
   return null;
+};
+
+// ── Document export (no external deps) ──────────────────────────────────────────
+const escHtml = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+// Minimal Markdown → HTML for AI output (headings, bold, bullet lists, paragraphs).
+const mdToHtml = md => {
+  const lines = String(md ?? "").split("\n");
+  let html = "", inList = false;
+  const inline = t => escHtml(t).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>");
+  for (const raw of lines) {
+    const l = raw.trim();
+    if (/^[-*]\s+/.test(l)) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${inline(l.replace(/^[-*]\s+/, ""))}</li>`; continue; }
+    if (inList) { html += "</ul>"; inList = false; }
+    if (/^###\s+/.test(l))      html += `<h3>${inline(l.replace(/^###\s+/, ""))}</h3>`;
+    else if (/^##\s+/.test(l))  html += `<h2>${inline(l.replace(/^##\s+/, ""))}</h2>`;
+    else if (/^#\s+/.test(l))   html += `<h1>${inline(l.replace(/^#\s+/, ""))}</h1>`;
+    else if (l === "")          html += "";
+    else                        html += `<p>${inline(l)}</p>`;
+  }
+  if (inList) html += "</ul>";
+  return html;
+};
+const exportDocHtml = (title, bodyHtml) =>
+  `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(title)}</title>
+<style>body{font-family:Georgia,'Times New Roman',serif;line-height:1.6;color:#111;max-width:820px;margin:28px auto;padding:0 22px}
+h1{font-size:22px}h2{font-size:17px;margin:20px 0 6px}h3{font-size:15px;margin:16px 0 4px}
+.q{margin:0 0 12px}.opt{margin:2px 0 2px 20px}.mk{color:#666;font-size:12px}hr{border:none;border-top:1px solid #ccc;margin:16px 0}
+ul{margin:6px 0 6px 22px}</style></head><body>${bodyHtml}</body></html>`;
+// Word: an HTML-based .doc blob (Word opens it natively) — no library needed.
+const downloadDoc = (filename, title, bodyHtml) => {
+  const blob = new Blob(["﻿", exportDocHtml(title, bodyHtml)], { type: "application/msword" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename.endsWith(".doc") ? filename : filename + ".doc";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+// PDF: open a print window; the user picks "Save as PDF" in the print dialog.
+const printDocPdf = (title, bodyHtml) => {
+  const w = window.open("", "_blank");
+  if (!w) return false;
+  w.document.write(exportDocHtml(title, bodyHtml));
+  w.document.close(); w.focus();
+  setTimeout(() => { try { w.print(); } catch { /* noop */ } }, 350);
+  return true;
 };
 
 // Pull an array out of the {status,data,message} envelope, by key or directly.
@@ -2781,6 +2827,8 @@ const AITools = () => {
   const [customL,        setCustomL]       = useState("");
   const [mapExam,        setMapExam]       = useState("");
   const [mapModal,       setMapModal]      = useState(false);
+  const [exams,          setExams]         = useState([]);
+  const [mapping,        setMapping]       = useState(false);
   const [toast,          setToast]         = useState(null);
   // Rubric builder
   const [rubType,        setRubType]       = useState("essay");
@@ -2899,10 +2947,64 @@ const AITools = () => {
     setLoadingIns(false);
   }, [insStudent, insTerm, insStudents]);
 
-  const handleMapToExam = () => {
-    if (!mapExam) return;
-    showToast(`✅ ${aiQuestions.length} questions added to "${EXAMS.find(e=>e.id===mapExam)?.title}"`);
-    setMapModal(false);
+  // Load the real exam list when the map modal opens.
+  const openMapModal = () => {
+    setMapModal(true);
+    getExams().then(r => setExams(arrOf(r))).catch(() => setExams([]));
+  };
+
+  const handleMapToExam = async () => {
+    if (!mapExam || mapping) return;
+    // Map the AI question shape onto the exam_questions shape the backend expects.
+    const payload = aiQuestions.map(q => {
+      const isMcq = Array.isArray(q.options) && q.options.length > 0;
+      return {
+        type: isMcq ? "mcq" : (["short","essay","tf","fill"].includes(q.type) ? q.type : "short"),
+        question: q.text || q.question || "",
+        options: isMcq ? q.options : undefined,
+        answer: isMcq ? (q.options[q.answer] ?? q.answer ?? "") : (q.model_answer ?? q.answer ?? ""),
+        marks: Number(q.marks) || 2,
+      };
+    });
+    setMapping(true);
+    try {
+      await addExamQuestions(mapExam, payload);
+      const title = exams.find(e => String(e.id) === String(mapExam))?.title || "the exam";
+      showToast(`✅ ${payload.length} question(s) added to "${title}".`);
+      setMapModal(false);
+    } catch (e) {
+      showToast(e?.message || e?.data?.message || "Could not add questions to the exam.");
+    }
+    setMapping(false);
+  };
+
+  // ── Exports ──
+  const exportQuestions = mode => {
+    if (!aiQuestions.length) return;
+    const body =
+      `<h1>${escHtml(subject)} — ${escHtml(topic || "Questions")}</h1>` +
+      aiQuestions.map((q,i) => {
+        const opts = Array.isArray(q.options)
+          ? q.options.map((o,oi) => `<div class="opt">${["A","B","C","D","E"][oi] || oi+1}. ${escHtml(o)}</div>`).join("")
+          : "";
+        return `<div class="q"><strong>Q${i+1}.</strong> ${escHtml(q.text || q.question || "")} <span class="mk">(${q.marks || 2} mk)</span>${opts}</div>`;
+      }).join("") +
+      `<hr/><h2>Answer Key</h2>` +
+      aiQuestions.map((q,i) => {
+        const ans = Array.isArray(q.options) ? (["A","B","C","D","E"][q.answer] ?? q.answer) : (q.model_answer ?? q.answer ?? "—");
+        return `<div class="q"><strong>Q${i+1}.</strong> ${escHtml(ans)}</div>`;
+      }).join("");
+    const fname = `${subject}-${topic || "questions"}`.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    if (mode === "word") downloadDoc(fname, `${subject} — ${topic}`, body);
+    else if (!printDocPdf(`${subject} — ${topic}`, body)) showToast("Allow pop-ups for this site to export as PDF.");
+  };
+
+  const exportLesson = mode => {
+    if (!lessonContent) return;
+    const body = mdToHtml(lessonContent);
+    const fname = `lesson-${subject}-${topic || "note"}`.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    if (mode === "word") downloadDoc(fname, `${topic} — ${subject}`, body);
+    else if (!printDocPdf(`${topic} — ${subject}`, body)) showToast("Allow pop-ups for this site to export as PDF.");
   };
 
   return (
@@ -2951,9 +3053,9 @@ const AITools = () => {
                 <div style={{ fontSize:13, fontWeight:700 }}>Generated Questions</div>
                 {aiQuestions.length > 0 && (
                   <div style={{ display:"flex", gap:7 }}>
-                    <Btn size="sm" variant="secondary">📥 PDF</Btn>
-                    <Btn size="sm" variant="secondary">📄 Word</Btn>
-                    <Btn size="sm" variant="primary" onClick={() => setMapModal(true)}>📌 Map to Exam</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => exportQuestions("pdf")}>📥 PDF</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => exportQuestions("word")}>📄 Word</Btn>
+                    <Btn size="sm" variant="primary" onClick={openMapModal}>📌 Map to Exam</Btn>
                   </div>
                 )}
               </div>
@@ -3018,8 +3120,8 @@ const AITools = () => {
                 </Btn>
                 {lessonContent && (
                   <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
-                    <Btn variant="secondary" style={{ justifyContent:"center" }}>📥 Download as PDF</Btn>
-                    <Btn variant="secondary" style={{ justifyContent:"center" }}>📄 Export to Word</Btn>
+                    <Btn variant="secondary" style={{ justifyContent:"center" }} onClick={() => exportLesson("pdf")}>📥 Download as PDF</Btn>
+                    <Btn variant="secondary" style={{ justifyContent:"center" }} onClick={() => exportLesson("word")}>📄 Export to Word</Btn>
                     <Btn variant="secondary" style={{ justifyContent:"center" }} onClick={() => { setTab("qgen"); setNotes(lessonContent.slice(0,500)); }}>📝 Generate Questions from This Note</Btn>
                   </div>
                 )}
@@ -3135,17 +3237,18 @@ const AITools = () => {
       {mapModal && (
         <Modal title="📌 Map Questions to Exam" onClose={() => setMapModal(false)} width={430}>
           <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
-            <div style={{ padding:"10px 13px", borderRadius:9, background:C.accentLight, fontSize:12, color:C.accentDark, fontWeight:600 }}>{aiQuestions.length} generated questions will be added to the selected exam.</div>
-            <Sel label="Select Exam" value={mapExam} onChange={setMapExam}
-              options={[{value:"",label:"— Choose exam —"}, ...EXAMS.map(e=>({value:e.id,label:`${e.title} (${e.class})`}))]}/>
-            {mapExam && (
+            <div style={{ padding:"10px 13px", borderRadius:9, background:C.accentLight, fontSize:12, color:C.accentDark, fontWeight:600 }}>{aiQuestions.length} generated question(s) will be added to the selected exam.</div>
+            {exams.length === 0 ? (
               <div style={{ padding:"9px 13px", borderRadius:9, background:"#F8FAFC", fontSize:12, color:C.textMid }}>
-                Selected: <strong>{EXAMS.find(e=>e.id===mapExam)?.title}</strong> · {EXAMS.find(e=>e.id===mapExam)?.questions} existing questions
+                No exams found. Create an exam first under <strong>Exams</strong>, then map questions to it.
               </div>
+            ) : (
+              <Sel label="Select Exam" value={mapExam} onChange={setMapExam}
+                options={[{value:"",label:"— Choose exam —"}, ...exams.map(e=>({value:String(e.id),label:`${e.title}${e.class_name?` (${e.class_name})`:""}`}))]}/>
             )}
             <div style={{ display:"flex", gap:9, justifyContent:"flex-end" }}>
               <Btn variant="secondary" onClick={() => setMapModal(false)}>Cancel</Btn>
-              <Btn variant="primary" onClick={handleMapToExam} disabled={!mapExam}>✅ Add to Exam</Btn>
+              <Btn variant="primary" onClick={handleMapToExam} disabled={!mapExam || mapping}>{mapping ? "Adding…" : "✅ Add to Exam"}</Btn>
             </div>
           </div>
         </Modal>

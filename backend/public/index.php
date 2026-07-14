@@ -244,6 +244,9 @@ try {
     } elseif ($path === '/api/v1/exams/submit' && $method === 'POST') {
         ExamController::submit(authGuard());
 
+    } elseif (preg_match('#^/api/v1/exams/(\d+)/questions$#', $path, $mex) && $method === 'POST') {
+        ExamController::addQuestions(authGuard(), (int)$mex[1]);
+
     // ── Inventory ─────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/inventory' && $method === 'GET') {
         InventoryController::index(authGuard());
