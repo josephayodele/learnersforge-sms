@@ -15,7 +15,7 @@ return [
     'base_url' => 'https://openrouter.ai/api/v1',
     'api_key'  => 'YOUR_OPENROUTER_API_KEY_HERE',   // starts with sk-or-...
     // Change this string any time to switch models — see https://openrouter.ai/models
-    'model'    => 'openai/gpt-4o-mini',
+    'model'    => 'google/gemini-2.5-flash',
     'timeout'  => 60,
 
     // Optional OpenRouter attribution (shows up on your OpenRouter dashboard):
