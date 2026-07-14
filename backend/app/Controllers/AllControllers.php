@@ -329,8 +329,10 @@ class AttendanceController {
         $classId = (int)($_GET['class_id']??0);
         $date    = $_GET['date'] ?? date('Y-m-d');
         $termId  = (int)($_GET['term_id']??2);
+        // NOTE: alias s.student_id (the human admission string) so it doesn't collide
+        // with and overwrite a.student_id (the numeric FK the frontend keys the roster by).
         $rows = DB::query(
-            'SELECT a.*,u.first_name,u.last_name,s.student_id FROM attendance a
+            'SELECT a.*,u.first_name,u.last_name,s.student_id AS admission_no FROM attendance a
              JOIN students s ON s.id=a.student_id JOIN users u ON u.id=s.user_id
              WHERE a.class_id=? AND a.date=? AND a.term_id=?',
             [$classId,$date,$termId]);

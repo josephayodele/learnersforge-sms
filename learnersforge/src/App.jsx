@@ -1199,6 +1199,13 @@ const Attendance = () => {
         })}
       </Card>
 
+      {/* Bottom submit — mirrors the toolbar button so long registers don't require scrolling back up. */}
+      {students.length > 0 && (
+        <div style={{ display:"flex", justifyContent:"flex-end", marginTop:16 }}>
+          <Btn variant="primary" disabled={saving || totalMarked===0} onClick={save}>{saving?"Saving…":`✅ Submit (${totalMarked}/${students.length})`}</Btn>
+        </div>
+      )}
+
       {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600,boxShadow:"0 8px 28px rgba(0,0,0,.2)",borderLeft:`4px solid ${C.accent}`}}>{toast}</div>}
       {modal==="qr"        && <Modal title="📷 QR Code Scanner"   onClose={() => setModal(null)} width={500}><QRScanner      onClose={() => setModal(null)} onScan={applyQR}/></Modal>}
       {modal==="biometric" && <Modal title="👆 Biometric Scanner" onClose={() => setModal(null)} width={400}><BiometricModal onClose={() => setModal(null)} onDone={() => setModal(null)}/></Modal>}
@@ -1309,36 +1316,38 @@ const ReportSheet = ({ rc }) => {
           </div>
         ))}
       </div>
-      {/* Behaviour (+ Attendance only when attendance was actually recorded) */}
-      <div style={{ display:"grid", gridTemplateColumns: hasAttendance ? "1.4fr 1fr" : "1fr", gap:12, marginBottom:14 }}>
-        <div style={{ border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-          <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase" }}>Affective Traits / Behavioural Assessment</div>
-          {rc.behaviour?.length ? (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr" }}>
-              {rc.behaviour.map((b,i) => (
-                <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 10px", borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
-                  <span>{b.trait}</span><strong>{b.score != null ? `${b.score}/5` : (b.rating || "—")}</strong>
-                </div>
-              ))}
-            </div>
-          ) : <div style={{ padding:"14px 10px", fontSize:11, color:C.textMuted, textAlign:"center" }}>No behavioural records.</div>}
-        </div>
-        {hasAttendance && (
-          <div style={{ border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-            <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase" }}>Attendance</div>
+      {/* Behaviour */}
+      <div style={{ border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden", marginBottom: hasAttendance ? 10 : 14 }}>
+        <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase" }}>Affective Traits / Behavioural Assessment</div>
+        {rc.behaviour?.length ? (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr" }}>
+            {rc.behaviour.map((b,i) => (
+              <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 10px", borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
+                <span>{b.trait}</span><strong>{b.score != null ? `${b.score}/5` : (b.rating || "—")}</strong>
+              </div>
+            ))}
+          </div>
+        ) : <div style={{ padding:"14px 10px", fontSize:11, color:C.textMuted, textAlign:"center" }}>No behavioural records.</div>}
+      </div>
+      {/* Attendance — single horizontal row of columns to save vertical space */}
+      {hasAttendance && (
+        <div style={{ border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden", marginBottom:14 }}>
+          <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase" }}>Attendance</div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)" }}>
             {[
               ["Times School Opened", rc.attendance?.total_days],
               ["Times Present", rc.attendance?.present],
               ["Times Absent", rc.attendance?.absent ?? "—"],
               ["Attendance %", `${rc.attendance?.percentage}%`],
-            ].map(([k,v]) => (
-              <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"6px 10px", borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
-                <span>{k}</span><strong>{v}</strong>
+            ].map(([k,v],i) => (
+              <div key={k} style={{ padding:"8px 10px", textAlign:"center", borderLeft: i ? `1px solid ${C.border}` : "none" }}>
+                <div style={{ fontSize:9, color:C.textMuted, textTransform:"uppercase" }}>{k}</div>
+                <div style={{ fontSize:14, fontWeight:700, marginTop:2 }}>{v}</div>
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
       {/* Comments */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:8 }}>
         {[["Class Teacher's Remark", rc.comments?.teacher_comment],["Head Teacher's Remark", rc.comments?.principal_comment]].map(([title,text]) => (
