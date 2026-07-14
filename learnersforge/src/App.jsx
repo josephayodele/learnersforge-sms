@@ -4,7 +4,8 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          getCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
-         getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff, login as apiLogin } from "./api/client";
+         getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
+         getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -1047,20 +1048,63 @@ const BiometricModal = ({ onClose, onDone }) => {
 const Attendance = () => {
   const [method,  setMethod]  = useState("manual");
   const [modal,   setModal]   = useState(null);
-  const [records, setRecords] = useState(
-    Object.fromEntries(STUDENTS.map(s => [s.id, { status:"", comment:"", dismissTime:"" }]))
-  );
+  const [classes, setClasses] = useState([]);
+  const [terms,   setTerms]   = useState([]);
+  const [classId, setClassId] = useState("");
+  const [termId,  setTermId]  = useState("");
+  const [date,    setDate]    = useState(() => new Date().toISOString().slice(0,10));
+  const [students,setStudents]= useState([]);
+  const [records, setRecords] = useState({});   // studentId -> { status, comment, dismissTime }
+  const [loading, setLoading] = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  const [toast,   setToast]   = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 2600); };
+
+  useEffect(() => {
+    getClasses().then(r => { const l = arrOf(r); setClasses(l); if (l[0]) setClassId(String(l[0].id)); }).catch(() => {});
+    getTerms().then(r => { const l = arrOf(r); setTerms(l); if (l.length) setTermId(String(l[l.length-1].id)); }).catch(() => {});
+  }, []);
+
+  // Load roster + any attendance already saved for this class/date/term.
+  useEffect(() => {
+    if (!classId || !termId || !date) return;
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([
+      getStudents({ class_id: classId, per_page: 100 }).then(r => arrOf(r, "students").map(normStudent)).catch(() => []),
+      getAttendance(classId, date, termId).then(r => arrOf(r)).catch(() => []),
+    ]).then(([roster, existing]) => {
+      if (cancelled) return;
+      setStudents(roster);
+      const byId = {};
+      existing.forEach(a => { byId[a.student_id] = { status:a.status||"", comment:a.comment||"", dismissTime:a.dismiss_time||"" }; });
+      const recs = {};
+      roster.forEach(s => { recs[s.id] = byId[s.id] || { status:"", comment:"", dismissTime:"" }; });
+      setRecords(recs);
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [classId, termId, date]);
 
   const setField = (id, key, val) => setRecords(p => ({ ...p, [id]: { ...p[id], [key]: val } }));
-  const countBy  = prefix => Object.values(records).filter(r => r.status.startsWith(prefix)).length;
+  const countBy  = prefix => Object.values(records).filter(r => r.status?.startsWith(prefix)).length;
   const totalMarked = Object.values(records).filter(r => r.status).length;
 
+  const save = async () => {
+    const recs = students.filter(s => records[s.id]?.status).map(s => ({
+      student_id: s.id, status: records[s.id].status,
+      dismiss_time: records[s.id].dismissTime || null, comment: records[s.id].comment || null, method:"manual",
+    }));
+    if (!recs.length) { flash("Mark at least one student first."); return; }
+    setSaving(true);
+    try {
+      const res = await submitAttendance(recs, Number(classId), Number(termId), date);
+      flash(`Attendance saved for ${res?.data?.saved ?? recs.length} student(s).`);
+    } catch (err) { flash(err?.message || err?.data?.error || "Save failed."); }
+    finally { setSaving(false); }
+  };
+
   const applyQR = scanned => {
-    setRecords(p => {
-      const n = { ...p };
-      scanned.forEach(sc => { if (n[sc.id]) n[sc.id] = { ...n[sc.id], status:"present" }; });
-      return n;
-    });
+    setRecords(p => { const n = { ...p }; scanned.forEach(sc => { if (n[sc.id]) n[sc.id] = { ...n[sc.id], status:"present" }; }); return n; });
     setModal(null);
   };
 
@@ -1072,8 +1116,8 @@ const Attendance = () => {
   return (
     <div className="fi">
       {/* Toolbar */}
-      <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
-        <div style={{ display:"flex", gap:2, background:"#F1F5F9", borderRadius:10, padding:4 }}>
+      <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap", alignItems:"flex-end" }}>
+        <div style={{ display:"flex", gap:2, background:"#F1F5F9", borderRadius:10, padding:4, alignSelf:"center" }}>
           {[["manual","✏️ Manual"],["qr","📷 QR Code"],["biometric","👆 Biometric"]].map(([v,l]) => (
             <button key={v} onClick={() => { setMethod(v); if (v !== "manual") setModal(v); }}
               style={{ padding:"6px 14px", borderRadius:8, border:"none", fontSize:12, fontWeight:600, cursor:"pointer",
@@ -1081,17 +1125,21 @@ const Attendance = () => {
                 boxShadow:method===v?"0 1px 4px rgba(0,0,0,.08)":"none", transition:"all .15s" }}>{l}</button>
           ))}
         </div>
-        <Sel label="" value="JSS 3A" onChange={() => {}} options={CLASSES.map(c => ({ value:c, label:c }))} style={{ width:140 }}/>
-        <Sel label="" value="Monday" onChange={() => {}} options={DAYS.map(d => ({ value:d, label:d }))} style={{ width:130 }}/>
-        <div style={{ marginLeft:"auto", display:"flex", gap:9 }}>
-          <Btn variant="secondary" size="sm">📥 Download Register</Btn>
-          <Btn variant="primary" disabled={totalMarked===0}>✅ Submit ({totalMarked}/{STUDENTS.length})</Btn>
+        <Sel label="Class" value={classId} onChange={setClassId} options={classes.map(c => ({ value:String(c.id), label:c.name }))} style={{ width:150 }}/>
+        <Sel label="Term"  value={termId}  onChange={setTermId}  options={terms.map(t => ({ value:String(t.id), label:t.year_name?`${t.name} · ${t.year_name}`:t.name }))} style={{ width:170 }}/>
+        <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+          <label style={{ fontSize:11, fontWeight:700, color:C.textMid, letterSpacing:".4px", textTransform:"uppercase" }}>Date</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            style={{ padding:"8px 12px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, outline:"none", background:C.surface, color:C.text }}/>
+        </div>
+        <div style={{ marginLeft:"auto", display:"flex", gap:9, alignSelf:"center" }}>
+          <Btn variant="primary" disabled={saving || totalMarked===0} onClick={save}>{saving?"Saving…":`✅ Submit (${totalMarked}/${students.length})`}</Btn>
         </div>
       </div>
 
       {/* Stats strip */}
       <div style={{ display:"flex", gap:10, marginBottom:16, flexWrap:"wrap" }}>
-        {[["Present",countBy("present"),C.accent],["Absent",countBy("absent"),C.coral],["Late",countBy("late"),C.amber],["Early Dismiss",countBy("early-dismissal"),C.orange],["Unmarked",STUDENTS.length-totalMarked,C.textMuted]].map(([l,v,col]) => (
+        {[["Present",countBy("present"),C.accent],["Absent",countBy("absent"),C.coral],["Late",countBy("late"),C.amber],["Early Dismiss",countBy("early-dismissal"),C.orange],["Unmarked",Math.max(0,students.length-totalMarked),C.textMuted]].map(([l,v,col]) => (
           <div key={l} style={{ flex:1, minWidth:90, padding:"11px 13px", background:col+"14", borderRadius:10, border:`1px solid ${col}28` }}>
             <div style={{ fontSize:20, fontWeight:700, color:col }}>{v}</div>
             <div style={{ fontSize:10, color:C.textMuted, marginTop:2 }}>{l}</div>
@@ -1101,31 +1149,34 @@ const Attendance = () => {
 
       {/* Register */}
       <Card style={{ padding:0 }}>
-        {STUDENTS.map((s, i) => {
-          const rec = records[s.id];
+        {loading ? (
+          <div style={{ padding:"50px", textAlign:"center", fontSize:12, color:C.textMuted }}>Loading register…</div>
+        ) : students.length === 0 ? (
+          <div style={{ padding:"40px", textAlign:"center", fontSize:12, color:C.textMuted }}>{classId ? "No students in this class." : "Select a class to take attendance."}</div>
+        ) : students.map((s, i) => {
+          const rec = records[s.id] || { status:"", comment:"", dismissTime:"" };
           const isED = rec.status === "early-dismissal";
           return (
-            <div key={s.id} style={{ borderBottom: i < STUDENTS.length-1 ? `1px solid ${C.border}` : "none", padding:"12px 18px" }}>
+            <div key={s.id} style={{ borderBottom: i < students.length-1 ? `1px solid ${C.border}` : "none", padding:"12px 18px" }}>
               <div style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
                 <Avatar initials={s.avatar} size={32} color={C.accent}/>
                 <div style={{ minWidth:150 }}>
                   <div style={{ fontSize:13, fontWeight:600 }}>{s.name}</div>
-                  <div style={{ fontSize:10, color:C.textMuted }}>{s.id}</div>
+                  <div style={{ fontSize:10, color:C.textMuted }}>{s.student_id || s.id}</div>
                 </div>
 
-                {/* Status dropdown */}
+                {/* Status dropdown (explicit dark text so options stay legible) */}
                 <select value={rec.status} onChange={e => setField(s.id, "status", e.target.value)}
                   style={{ padding:"6px 10px", borderRadius:8, border:`1.5px solid ${rec.status ? statusBorderColor(rec.status) : C.border}`,
-                    fontSize:12, outline:"none", background:rec.status?C.accentLight:C.surface,
+                    fontSize:12, outline:"none", background:rec.status?C.accentLight:C.surface, color:C.text,
                     fontFamily:"Sora,sans-serif", cursor:"pointer", flex:1, minWidth:200 }}>
-                  <option value="">— Mark attendance —</option>
-                  {STATUS_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  <option value="" style={{ color:C.text, background:"#fff" }}>— Mark attendance —</option>
+                  {STATUS_OPTS.map(o => <option key={o.value} value={o.value} style={{ color:C.text, background:"#fff" }}>{o.label}</option>)}
                 </select>
 
-                {/* Early dismissal time picker */}
                 {isED && (
                   <input type="time" value={rec.dismissTime} onChange={e => setField(s.id, "dismissTime", e.target.value)}
-                    style={{ padding:"6px 10px", borderRadius:8, border:`1px solid ${C.orange}`, fontSize:12, outline:"none", background:C.orangeLight, width:110 }}/>
+                    style={{ padding:"6px 10px", borderRadius:8, border:`1px solid ${C.orange}`, fontSize:12, outline:"none", background:C.orangeLight, color:C.text, width:110 }}/>
                 )}
 
                 {rec.status && (
@@ -1135,7 +1186,6 @@ const Attendance = () => {
                 )}
               </div>
 
-              {/* Optional comment */}
               <div style={{ marginTop:7, marginLeft:44 }}>
                 <input value={rec.comment} onChange={e => setField(s.id, "comment", e.target.value)}
                   placeholder="Optional comment — reason, medical note, parent call…"
@@ -1149,6 +1199,7 @@ const Attendance = () => {
         })}
       </Card>
 
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600,boxShadow:"0 8px 28px rgba(0,0,0,.2)",borderLeft:`4px solid ${C.accent}`}}>{toast}</div>}
       {modal==="qr"        && <Modal title="📷 QR Code Scanner"   onClose={() => setModal(null)} width={500}><QRScanner      onClose={() => setModal(null)} onScan={applyQR}/></Modal>}
       {modal==="biometric" && <Modal title="👆 Biometric Scanner" onClose={() => setModal(null)} width={400}><BiometricModal onClose={() => setModal(null)} onDone={() => setModal(null)}/></Modal>}
     </div>
@@ -1182,7 +1233,7 @@ const rcTdC = { ...rcTd, textAlign:"center" };
 // container so single and bulk printing share exactly the same layout.
 const ReportSheet = ({ rc }) => {
   if (!rc) return null;
-  const hasAttendance = (rc.attendance?.total_days > 0) || (rc.attendance?.present > 0);
+  const hasAttendance = (rc.attendance?.total_days > 0) || (rc.attendance?.present > 0) || (rc.attendance?.absent > 0);
   return (
     <Card className="print-area report-sheet" style={{ maxWidth:820, margin:"0 auto 18px", border:"2px solid "+C.border }}>
       {/* Header — school logo + name, then report-card band */}
@@ -1276,8 +1327,9 @@ const ReportSheet = ({ rc }) => {
           <div style={{ border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
             <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase" }}>Attendance</div>
             {[
-              ["Total Working Days", rc.attendance?.total_days],
-              ["Days Present", rc.attendance?.present],
+              ["Times School Opened", rc.attendance?.total_days],
+              ["Times Present", rc.attendance?.present],
+              ["Times Absent", rc.attendance?.absent ?? "—"],
               ["Attendance %", `${rc.attendance?.percentage}%`],
             ].map(([k,v]) => (
               <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"6px 10px", borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
@@ -1316,6 +1368,104 @@ const TraitSel = ({ value, onChange }) => (
 const arrOf = (res, key) => Array.isArray(res?.data?.[key]) ? res.data[key]
                          : Array.isArray(res?.data) ? res.data
                          : Array.isArray(res) ? res : [];
+
+// ── Report-card attendance totals ───────────────────────────────────────────────
+// Teachers enter, per student per term: times present, times absent, and the number
+// of times the school opened. These feed the report card's Attendance box.
+const AttendanceSummaryTab = ({ flash }) => {
+  const [classes,setClasses]=useState([]);
+  const [terms,setTerms]=useState([]);
+  const [classId,setClassId]=useState("");
+  const [termId,setTermId]=useState("");
+  const [students,setStudents]=useState([]);
+  const [vals,setVals]=useState({});   // studentId -> { present, absent, days_opened }
+  const [openedAll,setOpenedAll]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [saving,setSaving]=useState(false);
+
+  useEffect(()=>{
+    getClasses().then(r=>{ const l=arrOf(r); setClasses(l); if(l[0]) setClassId(String(l[0].id)); }).catch(()=>{});
+    getTerms().then(r=>{ const l=arrOf(r); setTerms(l); if(l.length) setTermId(String(l[l.length-1].id)); }).catch(()=>{});
+  },[]);
+
+  useEffect(()=>{
+    if(!classId||!termId) return;
+    let cancelled=false; setLoading(true);
+    Promise.all([
+      getStudents({class_id:classId,per_page:100}).then(r=>arrOf(r,"students").map(normStudent)).catch(()=>[]),
+      getTermAttendance(classId,termId).then(r=>arrOf(r)).catch(()=>[]),
+    ]).then(([roster,summary])=>{
+      if(cancelled) return;
+      setStudents(roster);
+      const byId={}; summary.forEach(a=>{ byId[a.student_id]={ present:a.present??"", absent:a.absent??"", days_opened:a.days_opened??"" }; });
+      const v={}; roster.forEach(s=>{ v[s.id]=byId[s.id]||{ present:"", absent:"", days_opened:"" }; });
+      setVals(v);
+    }).finally(()=>{ if(!cancelled) setLoading(false); });
+    return ()=>{ cancelled=true; };
+  },[classId,termId]);
+
+  const set=(id,k,val)=>setVals(p=>({...p,[id]:{...(p[id]||{}),[k]:val}}));
+  const applyOpenedToAll=()=>{ if(openedAll==="") return; setVals(p=>{ const n={...p}; students.forEach(s=>{ n[s.id]={...(n[s.id]||{}),days_opened:openedAll}; }); return n; }); };
+
+  const save=async()=>{
+    const records=students.map(s=>({ student_id:s.id, ...(vals[s.id]||{}) }));
+    setSaving(true);
+    try{ await saveTermAttendance(Number(classId),Number(termId),records); flash("Attendance totals saved."); }
+    catch(err){ flash(err?.message || err?.data?.error || "Save failed."); }
+    finally{ setSaving(false); }
+  };
+
+  const numInput=(id,k,ph)=>(
+    <input type="number" min="0" value={vals[id]?.[k] ?? ""} onChange={e=>set(id,k,e.target.value)} placeholder={ph}
+      style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, outline:"none", textAlign:"center", color:C.text, background:C.surface }}/>
+  );
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+      <div style={{ display:"flex", gap:10, alignItems:"flex-end", flexWrap:"wrap" }}>
+        <Sel label="Class" value={classId} onChange={setClassId} options={classes.map(c=>({value:String(c.id),label:c.name}))} style={{ width:160 }}/>
+        <Sel label="Term"  value={termId}  onChange={setTermId}  options={terms.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:180 }}/>
+        <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+          <label style={{ fontSize:11, fontWeight:700, color:C.textMid, letterSpacing:".4px", textTransform:"uppercase" }}>School opened (all)</label>
+          <div style={{ display:"flex", gap:6 }}>
+            <input type="number" min="0" value={openedAll} onChange={e=>setOpenedAll(e.target.value)} placeholder="e.g. 120"
+              style={{ width:100, padding:"8px 10px", borderRadius:8, border:`1px solid ${C.border}`, fontSize:13, outline:"none", color:C.text, background:C.surface }}/>
+            <Btn variant="secondary" size="sm" onClick={applyOpenedToAll}>Apply to all</Btn>
+          </div>
+        </div>
+        <div style={{ marginLeft:"auto" }}>
+          <Btn variant="primary" onClick={save} disabled={saving || students.length===0}>{saving?"Saving…":"💾 Save Totals"}</Btn>
+        </div>
+      </div>
+      <div style={{ padding:"10px 14px", borderRadius:9, background:C.accentLight, fontSize:12, color:C.accentDark }}>
+        ℹ️ Enter each student's total <strong>present</strong> and <strong>absent</strong> counts and the number of times the <strong>school opened</strong> for the term. These appear in the report card's Attendance box (Attendance % = present ÷ school opened).
+      </div>
+      <Card style={{ padding:0, overflowX:"auto" }}>
+        {loading ? (
+          <div style={{ padding:"40px", textAlign:"center", fontSize:12, color:C.textMuted }}>Loading…</div>
+        ) : students.length===0 ? (
+          <div style={{ padding:"40px", textAlign:"center", fontSize:12, color:C.textMuted }}>{classId?"No students in this class.":"Select a class."}</div>
+        ) : (
+          <table style={{ width:"100%", borderCollapse:"collapse", minWidth:560 }}>
+            <thead><tr style={{ background:"#F8FAFC", borderBottom:`1px solid ${C.border}` }}>
+              {["Student","Present","Absent","Times School Opened"].map(h=><th key={h} style={{ padding:"10px 14px", textAlign:h==="Student"?"left":"center", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {students.map(s=>(
+                <tr key={s.id} style={{ borderBottom:`1px solid ${C.border}` }}>
+                  <td style={{ padding:"8px 14px", fontSize:12, fontWeight:600 }}>{s.name}</td>
+                  <td style={{ padding:"8px 10px", width:120 }}>{numInput(s.id,"present","0")}</td>
+                  <td style={{ padding:"8px 10px", width:120 }}>{numInput(s.id,"absent","0")}</td>
+                  <td style={{ padding:"8px 10px", width:150 }}>{numInput(s.id,"days_opened","0")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+    </div>
+  );
+};
 
 // ── Report-card remark settings ─────────────────────────────────────────────────
 // Two features, both editable only by an admin or the class's mapped class teacher:
@@ -1816,7 +1966,7 @@ const Grades = () => {
   return (
     <div className="fi">
       <div className="no-print" style={{ display:"flex", gap:10, alignItems:"center", marginBottom:16, flexWrap:"wrap" }}>
-        <Tabs tabs={[{id:"scores",label:"📊 Scores"},{id:"psychomotor",label:"🏃 Psychomotor"},{id:"affective",label:"💙 Affective"},{id:"cumulative",label:"📈 Cumulative"},{id:"reportcard",label:"🖨 Report Card"},{id:"remarks",label:"⚙️ Remark Settings"}]} active={tab} onChange={setTab}/>
+        <Tabs tabs={[{id:"scores",label:"📊 Scores"},{id:"psychomotor",label:"🏃 Psychomotor"},{id:"affective",label:"💙 Affective"},{id:"attendance",label:"🗓 Attendance"},{id:"cumulative",label:"📈 Cumulative"},{id:"reportcard",label:"🖨 Report Card"},{id:"remarks",label:"⚙️ Remark Settings"}]} active={tab} onChange={setTab}/>
         <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
           {tab==="scores" && <Btn variant="secondary" size="sm" onClick={() => setShowCAConfig(true)}>⚙️ CA Settings</Btn>}
           {isEntryTab && <Btn variant="primary" size="sm" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "💾 Save"}</Btn>}
@@ -2086,6 +2236,8 @@ const Grades = () => {
           </div>
         </div>
       )}
+
+      {tab==="attendance" && <AttendanceSummaryTab flash={flash}/>}
 
       {tab==="remarks" && <RemarkSettings flash={flash}/>}
 

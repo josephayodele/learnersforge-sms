@@ -73,6 +73,11 @@ export const submitAttendance = (records, class_id, term_id = 2, date) =>
   api.post('/attendance/bulk', { records, class_id, term_id, date });
 export const getAttendanceSummary = (student_id, term_id = 2) =>
   api.get('/attendance/summary', { params: { student_id, term_id } });
+// Per-term manual totals (present / absent / days opened) shown on the report card.
+export const getTermAttendance  = (class_id, term_id) =>
+  api.get('/attendance/term-summary', { params: { class_id, term_id } });
+export const saveTermAttendance = (class_id, term_id, records) =>
+  api.post('/attendance/term-summary', { class_id, term_id, records });
 
 // ── Grades ────────────────────────────────────────────────────────────────────
 export const getCaTypes     = () => api.get('/ca-types');

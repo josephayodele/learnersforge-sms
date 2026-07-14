@@ -155,6 +155,12 @@ try {
     } elseif ($path === '/api/v1/attendance/summary' && $method === 'GET') {
         AttendanceController::summary(authGuard());
 
+    } elseif ($path === '/api/v1/attendance/term-summary' && $method === 'GET') {
+        AttendanceController::summaryList(authGuard());
+
+    } elseif ($path === '/api/v1/attendance/term-summary' && $method === 'POST') {
+        AttendanceController::saveSummary(authGuard());
+
     // ── Grades ────────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/ca-types' && $method === 'GET') {
         GradeController::caTypes(authGuard());

@@ -118,12 +118,18 @@ code {
    We hide chrome with display:none (not visibility) and let the sheet flow in
    normal document flow, so it fills the page width and paginates across pages. */
 @media print {
-  @page { size: A4 portrait; margin: 12mm; }
+  @page { size: A4 portrait; margin: 8mm; }
 
   .print-only { display: block !important; }
 
-  /* Each report sheet starts on its own page (bulk download = many sheets). */
-  .report-sheet { page-break-after: always; }
+  /* Each report sheet is scaled to fit on exactly one page, and starts a new page
+     (bulk download = many sheets). `zoom` scales inline px sizes too (unlike a
+     font-size override), which is what keeps a full sheet within one A4 page. */
+  .report-sheet {
+    zoom: 0.82;
+    page-break-after: always;
+    page-break-inside: avoid;
+  }
   .report-sheet:last-child { page-break-after: auto; }
 
   html, body { background: #fff !important; }
@@ -164,10 +170,11 @@ code {
   /* Constrain the logo so the header never overflows the page. */
   .print-area img { max-height: 46px !important; width: auto !important; }
 
-  /* Compact each report sheet so a full 9-subject sheet fits one page. */
-  .report-sheet { font-size: 11px !important; }
+  /* Compact each report sheet so a full 12-subject sheet fits one page
+     (on top of the zoom above). */
+  .report-sheet { font-size: 11px !important; padding: 10px 12px !important; }
   .report-sheet th,
-  .report-sheet td { padding: 3px 6px !important; }
-  .report-sheet > div { margin-bottom: 7px !important; }
+  .report-sheet td { padding: 2px 5px !important; }
+  .report-sheet > div { margin-bottom: 6px !important; }
   .report-sheet div { min-height: 0 !important; }
 }

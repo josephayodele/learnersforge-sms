@@ -344,6 +344,8 @@ class AttendanceController {
         $classId = (int)($b['class_id']??0);
         $date    = $b['date'] ?? date('Y-m-d');
         $by      = (int)$user['id'];
+        // Attendance is taken by the class teacher (or an admin).
+        Perm::assertManageClass($user, $classId);
 
         DB::conn()->beginTransaction();
         try {
@@ -365,6 +367,39 @@ class AttendanceController {
         $result = array_fill_keys(['present','absent-excused','absent-unexcused','late','late-excused','early-dismissal'],0);
         foreach ($rows as $r) $result[$r['status']] = (int)$r['cnt'];
         respond($result);
+    }
+
+    // Manual per-term attendance totals (present / absent / days_opened) for a class,
+    // used to fill the report card. Keyed by student_id for the entry grid.
+    public static function summaryList(array $user): void {
+        $classId = (int)($_GET['class_id']??0);
+        $termId  = (int)($_GET['term_id']??0);
+        if (!$classId || !$termId) respond(null,422,'class_id and term_id required');
+        respond(DB::query(
+            'SELECT asum.student_id, asum.present, asum.absent, asum.days_opened
+             FROM attendance_summary asum JOIN students s ON s.id=asum.student_id
+             WHERE s.class_id=? AND asum.term_id=?',
+            [$classId,$termId]));
+    }
+
+    public static function saveSummary(array $user): void {
+        $b = body();
+        $classId = (int)($b['class_id']??0);
+        $termId  = (int)($b['term_id']??0);
+        $rows    = $b['records'] ?? [];
+        if (!$termId) respond(null,422,'term_id required');
+        Perm::assertManageClass($user, $classId);   // class teacher / admin only
+        $num = fn($v) => ($v === '' || $v === null) ? null : max(0, (int)$v);
+        DB::conn()->beginTransaction();
+        try {
+            foreach ($rows as $r) {
+                DB::run('INSERT INTO attendance_summary (student_id,term_id,present,absent,days_opened) VALUES (?,?,?,?,?)
+                         ON DUPLICATE KEY UPDATE present=VALUES(present),absent=VALUES(absent),days_opened=VALUES(days_opened),updated_at=NOW()',
+                    [(int)$r['student_id'],$termId,$num($r['present']??null),$num($r['absent']??null),$num($r['days_opened']??null)]);
+            }
+            DB::conn()->commit();
+            respond(['saved' => count($rows)]);
+        } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
     }
 }
 
@@ -577,14 +612,30 @@ class GradeController {
             'domain' => $b['domain'],
         ], $brows);
 
-        // Attendance for the term.
-        $att = DB::one("SELECT COUNT(*) total, SUM(status='present') present FROM attendance WHERE student_id=? AND term_id=?",[$studentId,$termId]);
-        $attTotal = (int)($att['total'] ?? 0); $attPresent = (int)($att['present'] ?? 0);
-        $attendance = [
-            'total_days' => $attTotal,
-            'present'    => $attPresent,
-            'percentage' => $attTotal > 0 ? round(($attPresent / $attTotal) * 100, 2) : 0,
-        ];
+        // Attendance for the term. A teacher-entered summary (present / absent /
+        // days the school opened) takes precedence; otherwise derive from the
+        // daily attendance records.
+        $sum = DB::one('SELECT present,absent,days_opened FROM attendance_summary WHERE student_id=? AND term_id=?',[$studentId,$termId]);
+        if ($sum && ($sum['present'] !== null || $sum['absent'] !== null || $sum['days_opened'] !== null)) {
+            $present = (int)($sum['present'] ?? 0);
+            $absent  = (int)($sum['absent'] ?? 0);
+            $opened  = $sum['days_opened'] !== null ? (int)$sum['days_opened'] : ($present + $absent);
+            $attendance = [
+                'total_days' => $opened,
+                'present'    => $present,
+                'absent'     => $absent,
+                'percentage' => $opened > 0 ? round(($present / $opened) * 100, 2) : 0,
+            ];
+        } else {
+            $att = DB::one("SELECT COUNT(*) total, SUM(status='present') present, SUM(status LIKE 'absent%') absent FROM attendance WHERE student_id=? AND term_id=?",[$studentId,$termId]);
+            $attTotal = (int)($att['total'] ?? 0); $attPresent = (int)($att['present'] ?? 0);
+            $attendance = [
+                'total_days' => $attTotal,
+                'present'    => $attPresent,
+                'absent'     => (int)($att['absent'] ?? 0),
+                'percentage' => $attTotal > 0 ? round(($attPresent / $attTotal) * 100, 2) : 0,
+            ];
+        }
 
         // Manual comments (if a teacher typed them) take precedence; otherwise fall
         // back to the admin-defined remark band for this overall percentage.
