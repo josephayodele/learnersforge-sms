@@ -511,12 +511,16 @@ const parseCSV = (text) => {
 };
 
 // Read a CSV or Excel file into an array-of-arrays (first row = headers).
+// Supports .csv/.txt (parsed directly) and .xlsx/.xls (via SheetJS, lazy-loaded).
 const readSheet = async (file) => {
   const ext = (file.name.split(".").pop() || "").toLowerCase();
   if (ext === "csv" || ext === "txt") return parseCSV(await file.text());
-  const XLSX = await import("xlsx");                        // lazy — only loaded for real spreadsheets
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const mod  = await import("xlsx");                        // lazy — only loaded for real spreadsheets
+  const XLSX = mod?.read ? mod : (mod?.default || mod);     // CJS/ESM interop guard
+  if (!XLSX?.read) throw new Error("Excel support failed to load. Please retry, or save the file as CSV.");
+  const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) throw new Error("That workbook has no readable sheet. Check the file and try again.");
   return XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" })
     .filter(r => r.some(cell => String(cell ?? "").trim() !== ""));
 };
@@ -586,12 +590,17 @@ const ImportStudentsModal = ({ onClose, onImported }) => {
     if (!file) return;
     setError(null); setResult(null); setFileName(file.name);
     try {
-      const mapped = mapSheetRows(await readSheet(file));
-      if (!mapped.length) { setError("No student rows found. Make sure the first row has column headers (e.g. Student Name, Admission No)."); setRows([]); return; }
+      const aoa = await readSheet(file);
+      const mapped = mapSheetRows(aoa);
+      if (!mapped.length) {
+        const hdrs = (aoa[0] || []).map(h => String(h ?? "").trim()).filter(Boolean).join(", ");
+        setError(`No student rows found. Detected headers: ${hdrs || "none"}. The first row must include a "Student Name" (or "First Name"/"Last Name") column.`);
+        setRows([]); return;
+      }
       setRows(mapped);
     } catch (err) {
       setRows([]);
-      setError(err?.message || "Could not read that file. Please upload a .csv or .xlsx file.");
+      setError(err?.message || "Could not read that file. Please upload a .csv, .xlsx or .xls file.");
     }
   };
 
