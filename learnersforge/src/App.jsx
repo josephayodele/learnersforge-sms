@@ -581,6 +581,28 @@ const mapRowsWith = (aoa, aliasMap) => {
   }).filter(o => o.name || o.first_name);
 };
 
+// Trigger a CSV download from an array-of-arrays (used for import templates).
+const downloadCsv = (filename, rows) => {
+  const csv = rows.map(r => r.map(c => {
+    const s = String(c ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }).join(",")).join("\r\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+const STUDENT_TEMPLATE = [
+  ["Student Name", "Admission No", "Date of Birth", "Gender", "Guardian Name", "Phone"],
+  ["John Doe", "GFA/2026/001", "2012-05-14", "Male", "Mr. Doe", "08030000000"],
+];
+const STAFF_TEMPLATE = [
+  ["Staff ID", "Name", "Email", "Role", "Designation", "Department", "Phone"],
+  ["10001", "Jane Doe", "jane.doe@school.edu", "Teacher", "Class Teacher", "Secondary School Staff", "08030000000"],
+  ["10002", "John Bello", "john.bello@school.edu", "Accountant", "Bursar", "Administration", "08040000000"],
+];
+
 const STAFF_ALIASES = {
   name:          ["staff name", "name", "full name", "fullname", "teacher name"],
   first_name:    ["first name", "firstname", "given name"],
@@ -690,6 +712,9 @@ const ImportStudentsModal = ({ onClose, onImported }) => {
                  options={[{ value:"", label:"Select arm…" }, ...arms.map(a => ({ value:a, label:a || "—" }))]}/>
           </div>
 
+          <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:8 }}>
+            <Btn variant="ghost" size="sm" onClick={() => downloadCsv("student-import-template.csv", STUDENT_TEMPLATE)}>⬇ Download template</Btn>
+          </div>
           <label style={{ display:"block", border:`2px dashed ${C.border}`, borderRadius:12, padding:"22px", textAlign:"center", background:"#F8FAFC", cursor:"pointer" }}>
             <div style={{ fontSize:26, marginBottom:6 }}>📄</div>
             <div style={{ fontSize:13, fontWeight:600, color:C.textMid }}>{fileName || "Click to choose a CSV or Excel file"}</div>
@@ -802,10 +827,13 @@ const ImportStaffModal = ({ onClose, onImported }) => {
         </div>
       ) : (
         <div>
+          <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:8 }}>
+            <Btn variant="ghost" size="sm" onClick={() => downloadCsv("staff-import-template.csv", STAFF_TEMPLATE)}>⬇ Download template</Btn>
+          </div>
           <label style={{ display:"block", border:`2px dashed ${C.border}`, borderRadius:12, padding:"22px", textAlign:"center", background:"#F8FAFC", cursor:"pointer" }}>
             <div style={{ fontSize:26, marginBottom:6 }}>📄</div>
             <div style={{ fontSize:13, fontWeight:600, color:C.textMid }}>{fileName || "Click to choose a CSV or Excel file"}</div>
-            <div style={{ fontSize:11, color:C.textMuted, marginTop:4 }}>Columns: Staff Name, Email, Phone, Gender, Role, Department, Designation, Qualification, Hire Date</div>
+            <div style={{ fontSize:11, color:C.textMuted, marginTop:4 }}>Columns: Staff ID, Name, Email, Role, Designation, Department, Phone</div>
             <input type="file" accept=".csv,.txt,.xlsx,.xls" onChange={onFile} style={{ display:"none" }}/>
           </label>
           <div style={{ fontSize:11, color:C.textMuted, marginTop:8 }}>Role accepts: Teacher, Accountant/Bursar, Admin/Principal. Default password is <strong>password123</strong>. Assign classes/subjects afterwards from each staff member.</div>
