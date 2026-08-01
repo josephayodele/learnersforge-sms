@@ -163,7 +163,7 @@ class StudentController {
     }
 
     // Normalise common spreadsheet date formats to Y-m-d (null if unparseable/blank).
-    private static function normalizeDate($v): ?string {
+    public static function normalizeDate($v): ?string {
         $v = trim((string)$v);
         if ($v === '') return null;
         if (preg_match('#^\d{4}-\d{2}-\d{2}$#', $v)) return $v;
@@ -248,6 +248,70 @@ class StaffController {
             DB::conn()->commit();
             respond(['staff_code'=>$code,'user_id'=>$uid],201,'Staff created');
         } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
+    }
+
+    // Bulk import staff from a CSV/Excel upload. Admin only. Each row is its own
+    // transaction so one bad row never aborts the batch.
+    public static function import(array $user): void {
+        if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can import staff.');
+        $sid  = (int)$user['school_id'];
+        $rows = body()['staff'] ?? [];
+        if (!is_array($rows) || !$rows) respond(null, 422, 'No staff found in the file.');
+
+        // Map free-text role labels onto the users.role enum (never 'student').
+        $roleOf = function ($raw): string {
+            $r = strtolower(trim((string)$raw));
+            if ($r === '') return 'teacher';
+            if (str_contains($r, 'account') || str_contains($r, 'bursar')) return 'accountant';
+            if (str_contains($r, 'admin') || str_contains($r, 'principal') || str_contains($r, 'head')) return 'school_admin';
+            if (str_contains($r, 'parent')) return 'parent';
+            return 'teacher';
+        };
+
+        $created = 0; $failed = 0; $errors = [];
+        foreach ($rows as $i => $row) {
+            $rowNo = $i + 1;
+            $first = trim((string)($row['first_name'] ?? ''));
+            $last  = trim((string)($row['last_name'] ?? ''));
+            if ($first === '' && !empty($row['name'])) {
+                $parts = preg_split('/\s+/', trim((string)$row['name']));
+                $first = array_shift($parts) ?: '';
+                $last  = implode(' ', $parts);
+            }
+            if ($first === '') { $failed++; $errors[] = ['row'=>$rowNo, 'name'=>($row['name'] ?? ''), 'error'=>'Missing staff name']; continue; }
+
+            $gender = strtolower(trim((string)($row['gender'] ?? '')));
+            if (!in_array($gender, ['male','female'], true)) $gender = null;
+            $phone = trim((string)($row['phone'] ?? '')) ?: null;
+            $hire  = StudentController::normalizeDate($row['hire_date'] ?? null) ?? date('Y-m-d');
+
+            DB::conn()->beginTransaction();
+            try {
+                $providedEmail = trim((string)($row['email'] ?? ''));
+                $tmpEmail = $providedEmail !== '' ? $providedEmail : ('staff_' . uniqid('', true) . '@placeholder.local');
+                $uid = DB::exec('INSERT INTO users (school_id,first_name,last_name,email,phone,password,role,gender) VALUES (?,?,?,?,?,?,?,?)',
+                    [$sid, $first, $last, $tmpEmail, $phone, password_hash('password123', PASSWORD_DEFAULT), $roleOf($row['role'] ?? ''), $gender]);
+                if ($providedEmail === '') {
+                    DB::run('UPDATE users SET email=? WHERE id=?', ['staff' . $uid . '@learnersforge.local', $uid]);
+                }
+                $code = !empty($row['staff_id']) ? $row['staff_id'] : 'TC' . str_pad((string)$uid, 3, '0', STR_PAD_LEFT);
+                DB::exec('INSERT INTO staff (user_id,staff_id,department,designation,qualification,hire_date) VALUES (?,?,?,?,?,?)',
+                    [$uid, $code, $row['department'] ?? null, $row['designation'] ?? null, $row['qualification'] ?? null, $hire]);
+                DB::conn()->commit();
+                $created++;
+            } catch (Throwable $e) {
+                DB::conn()->rollBack();
+                $failed++;
+                $msg = $e->getMessage();
+                if (stripos($msg, 'Duplicate') !== false) {
+                    if     (stripos($msg, 'staff_id') !== false) $msg = 'Duplicate staff ID';
+                    elseif (stripos($msg, 'email')    !== false) $msg = 'Duplicate email';
+                    else $msg = 'Duplicate entry';
+                }
+                $errors[] = ['row'=>$rowNo, 'name'=>trim("$first $last"), 'error'=>$msg];
+            }
+        }
+        respond(['created'=>$created, 'failed'=>$failed, 'errors'=>$errors], 201, "Imported $created staff, $failed failed");
     }
 
     // Current teaching / class-teacher assignments for a staff member.

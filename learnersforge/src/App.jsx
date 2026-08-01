@@ -4,7 +4,7 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          getCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
-         getStaff, createStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
+         getStaff, createStaff, importStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
          getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
          getExamSubmissions, getSubmission, gradeSubmission,
@@ -559,6 +559,43 @@ const mapSheetRows = (aoa) => {
   }).filter(o => o.name || o.first_name);
 };
 
+// Generic version of the above for any alias map (used by staff import).
+const headerToFieldWith = (aliasMap, h) => {
+  const n = norm(h);
+  for (const [field, aliases] of Object.entries(aliasMap)) if (aliases.includes(n)) return field;
+  return null;
+};
+const mapRowsWith = (aoa, aliasMap) => {
+  if (!aoa.length) return [];
+  const cols = aoa[0].map(h => headerToFieldWith(aliasMap, h));
+  return aoa.slice(1).map(cells => {
+    const o = {};
+    cols.forEach((f, i) => { if (f) o[f] = String(cells[i] ?? "").trim(); });
+    if (!o.first_name && o.name) {
+      const parts = o.name.split(/\s+/).filter(Boolean);
+      o.first_name = parts.shift() || "";
+      o.last_name = parts.join(" ");
+    }
+    o.name = o.name || [o.first_name, o.last_name].filter(Boolean).join(" ");
+    return o;
+  }).filter(o => o.name || o.first_name);
+};
+
+const STAFF_ALIASES = {
+  name:          ["staff name", "name", "full name", "fullname", "teacher name"],
+  first_name:    ["first name", "firstname", "given name"],
+  last_name:     ["last name", "lastname", "surname", "family name"],
+  email:         ["email", "email address", "e mail", "mail"],
+  phone:         ["phone", "mobile", "mobile number", "phone number", "contact", "mobile no"],
+  gender:        ["gender", "sex"],
+  role:          ["role", "user role", "system role", "access", "staff type", "category"],
+  department:    ["department", "dept", "unit"],
+  designation:   ["designation", "title", "position", "job title", "rank"],
+  qualification: ["qualification", "qualifications", "degree", "education"],
+  hire_date:     ["hire date", "date joined", "employment date", "date of employment", "start date", "date hired"],
+  staff_id:      ["staff id", "staff no", "staff number", "employee id", "emp id"],
+};
+
 const ImportStudentsModal = ({ onClose, onImported }) => {
   const [classes, setClasses]   = useState([]);
   const [form, setForm]         = useState("");
@@ -688,6 +725,120 @@ const ImportStudentsModal = ({ onClose, onImported }) => {
             <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
             <Btn variant="primary" onClick={doImport} disabled={busy || !classId || !rows.length}>
               {busy ? "Importing…" : `Import ${rows.length || ""} Student${rows.length === 1 ? "" : "s"}`}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+};
+
+// ── Import Staff (CSV / Excel) ──────────────────────────────────────────────────
+const ImportStaffModal = ({ onClose, onImported }) => {
+  const [rows, setRows]         = useState([]);
+  const [fileName, setFileName] = useState("");
+  const [error, setError]       = useState(null);
+  const [busy, setBusy]         = useState(false);
+  const [result, setResult]     = useState(null);
+
+  const onFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(null); setResult(null); setFileName(file.name);
+    try {
+      const aoa = await readSheet(file);
+      const mapped = mapRowsWith(aoa, STAFF_ALIASES);
+      if (!mapped.length) {
+        const hdrs = (aoa[0] || []).map(h => String(h ?? "").trim()).filter(Boolean).join(", ");
+        setError(`No staff rows found. Detected headers: ${hdrs || "none"}. The first row must include a "Staff Name" (or "First Name"/"Last Name") column.`);
+        setRows([]); return;
+      }
+      setRows(mapped);
+    } catch (err) {
+      setRows([]);
+      setError(err?.message || "Could not read that file. Please upload a .csv, .xlsx or .xls file.");
+    }
+  };
+
+  const doImport = async () => {
+    if (!rows.length) { setError("Please choose a file with at least one staff member."); return; }
+    setBusy(true); setError(null);
+    try {
+      const res = await importStaff(rows);
+      setResult(res?.data ?? { created: 0, failed: 0, errors: [] });
+    } catch (err) {
+      setError(err?.message || err?.data?.error || "Import failed.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title="📥 Import Staff" onClose={busy ? () => {} : onClose} width={720}>
+      {result ? (
+        <div>
+          <div style={{ padding:"16px", borderRadius:10, background:C.accentLight, border:`1px solid ${C.accent}33`, marginBottom:14 }}>
+            <div style={{ fontSize:15, fontWeight:800, color:C.accentDark }}>✅ {result.created} staff member{result.created === 1 ? "" : "s"} imported</div>
+            {result.failed > 0 && <div style={{ fontSize:12, color:C.coral, fontWeight:600, marginTop:4 }}>{result.failed} row{result.failed === 1 ? "" : "s"} skipped</div>}
+          </div>
+          {result.errors?.length > 0 && (
+            <div style={{ maxHeight:200, overflowY:"auto", border:`1px solid ${C.border}`, borderRadius:8, marginBottom:14 }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead><tr style={{ background:"#F8FAFC" }}>{["Row","Name","Reason"].map(h => <th key={h} style={{ padding:"7px 10px", textAlign:"left", fontSize:10, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {result.errors.map((er, i) => (
+                    <tr key={i} style={{ borderTop:`1px solid ${C.border}` }}>
+                      <td style={{ padding:"6px 10px", color:C.textMuted }}>{er.row}</td>
+                      <td style={{ padding:"6px 10px" }}>{er.name || "—"}</td>
+                      <td style={{ padding:"6px 10px", color:C.coral }}>{er.error}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{ display:"flex", justifyContent:"flex-end" }}>
+            <Btn variant="primary" onClick={onImported}>Done</Btn>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <label style={{ display:"block", border:`2px dashed ${C.border}`, borderRadius:12, padding:"22px", textAlign:"center", background:"#F8FAFC", cursor:"pointer" }}>
+            <div style={{ fontSize:26, marginBottom:6 }}>📄</div>
+            <div style={{ fontSize:13, fontWeight:600, color:C.textMid }}>{fileName || "Click to choose a CSV or Excel file"}</div>
+            <div style={{ fontSize:11, color:C.textMuted, marginTop:4 }}>Columns: Staff Name, Email, Phone, Gender, Role, Department, Designation, Qualification, Hire Date</div>
+            <input type="file" accept=".csv,.txt,.xlsx,.xls" onChange={onFile} style={{ display:"none" }}/>
+          </label>
+          <div style={{ fontSize:11, color:C.textMuted, marginTop:8 }}>Role accepts: Teacher, Accountant/Bursar, Admin/Principal. Default password is <strong>password123</strong>. Assign classes/subjects afterwards from each staff member.</div>
+
+          {error && <div style={{ marginTop:12, padding:"9px 12px", borderRadius:8, background:C.coralLight, color:"#991B1B", fontSize:12, fontWeight:500 }}>{error}</div>}
+
+          {rows.length > 0 && (
+            <div style={{ marginTop:14 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:C.textMid, marginBottom:6 }}>{rows.length} staff member{rows.length === 1 ? "" : "s"} ready to import {rows.length > 50 ? "(showing first 50)" : ""}</div>
+              <div style={{ maxHeight:230, overflowY:"auto", border:`1px solid ${C.border}`, borderRadius:8 }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                  <thead><tr style={{ background:"#F8FAFC", position:"sticky", top:0 }}>{["#","Name","Email","Role","Department","Designation"].map(h => <th key={h} style={{ padding:"7px 10px", textAlign:"left", fontSize:10, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {rows.slice(0, 50).map((r, i) => (
+                      <tr key={i} style={{ borderTop:`1px solid ${C.border}` }}>
+                        <td style={{ padding:"6px 10px", color:C.textMuted }}>{i + 1}</td>
+                        <td style={{ padding:"6px 10px", fontWeight:600 }}>{r.name || <span style={{ color:C.coral }}>Missing name</span>}</td>
+                        <td style={{ padding:"6px 10px", color:C.textMid }}>{r.email || "—"}</td>
+                        <td style={{ padding:"6px 10px", color:C.textMid }}>{r.role || "Teacher"}</td>
+                        <td style={{ padding:"6px 10px", color:C.textMid }}>{r.department || "—"}</td>
+                        <td style={{ padding:"6px 10px", color:C.textMid }}>{r.designation || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:9, marginTop:16 }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn variant="primary" onClick={doImport} disabled={busy || !rows.length}>
+              {busy ? "Importing…" : `Import ${rows.length || ""} Staff`}
             </Btn>
           </div>
         </div>
@@ -4237,6 +4388,7 @@ const Staff = () => {
   const [search,setSearch]=useState("");
   const [reloadKey,setReloadKey]=useState(0);
   const [showAdd,setShowAdd]=useState(false);
+  const [showImport,setShowImport]=useState(false);
   const [assignFor,setAssignFor]=useState(null);
   const [del,setDel]=useState(null);          // staff pending delete
   const [deleting,setDeleting]=useState(false);
@@ -4276,10 +4428,15 @@ const Staff = () => {
     <div className="fi">
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, gap:10 }}>
         <Input value={search} onChange={setSearch} placeholder="🔍 Search staff…" style={{ width:240 }}/>
-        <Btn variant="primary" onClick={()=>setShowAdd(true)}>+ Add Staff</Btn>
+        <div style={{display:"flex",gap:8}}>
+          <Btn variant="secondary" onClick={()=>setShowImport(true)}>📥 Import Staff</Btn>
+          <Btn variant="primary" onClick={()=>setShowAdd(true)}>+ Add Staff</Btn>
+        </div>
       </div>
       {showAdd && <AddStaffModal classes={classes} subjects={subjects}
         onClose={()=>setShowAdd(false)} onSaved={()=>{ setShowAdd(false); flash("Staff created."); setReloadKey(k=>k+1); }}/>}
+      {showImport && <ImportStaffModal
+        onClose={()=>setShowImport(false)} onImported={()=>{ setShowImport(false); flash("Staff imported."); setReloadKey(k=>k+1); }}/>}
       {assignFor && <AssignStaffModal staff={assignFor} classes={classes} subjects={subjects}
         onClose={()=>setAssignFor(null)} onSaved={()=>{ setAssignFor(null); flash("Assignments saved."); }}/>}
       {del && (

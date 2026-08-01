@@ -130,6 +130,9 @@ try {
     } elseif ($path === '/api/v1/staff' && $method === 'GET') {
         StaffController::index(authGuard());
 
+    } elseif ($path === '/api/v1/staff/import' && $method === 'POST') {
+        StaffController::import(authGuard());
+
     } elseif ($path === '/api/v1/staff' && $method === 'POST') {
         StaffController::store(authGuard());
 
