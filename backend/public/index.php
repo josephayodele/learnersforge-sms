@@ -168,6 +168,12 @@ try {
     } elseif ($path === '/api/v1/ca-types' && $method === 'GET') {
         GradeController::caTypes(authGuard());
 
+    } elseif ($path === '/api/v1/ca-types/all' && $method === 'GET') {
+        GradeController::caTypesAll(authGuard());
+
+    } elseif ($path === '/api/v1/ca-types/save' && $method === 'POST') {
+        GradeController::saveCaTypes(authGuard());
+
     // ── Report-card remark ranges ───────────────────────────────────────────
     } elseif ($path === '/api/v1/remark-ranges' && $method === 'GET') {
         RemarkController::index(authGuard());

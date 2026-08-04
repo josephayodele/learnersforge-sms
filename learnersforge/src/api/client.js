@@ -87,6 +87,8 @@ export const aiChat = payload => api.post('/ai/chat', payload).then(r => r?.data
 
 // ── Grades ────────────────────────────────────────────────────────────────────
 export const getCaTypes     = () => api.get('/ca-types');
+export const getCaTypesAll  = () => api.get('/ca-types/all');
+export const saveCaTypes    = components => api.post('/ca-types/save', { components });
 export const getGrades      = (params = {}) => api.get('/grades', { params });
 export const submitGrades   = grades => api.post('/grades/bulk', { grades });
 export const getReportCard  = (student_id, term_id = 2) =>

@@ -472,7 +472,55 @@ class AttendanceController {
 // ─── GradeController ──────────────────────────────────────────────────────────
 class GradeController {
     public static function caTypes(array $user): void {
-        respond(DB::query('SELECT * FROM ca_types WHERE school_id=? AND is_enabled=1 ORDER BY sort_order',[(int)$user['school_id']]));
+        respond(DB::query('SELECT * FROM ca_types WHERE school_id=? AND is_enabled=1 ORDER BY sort_order,id',[(int)$user['school_id']]));
+    }
+
+    // All components (incl. disabled) for the CA Settings editor.
+    public static function caTypesAll(array $user): void {
+        respond(DB::query('SELECT id,label,max_score,is_enabled,is_exam,sort_order FROM ca_types WHERE school_id=? ORDER BY sort_order,id',[(int)$user['school_id']]));
+    }
+
+    // Replace the school's CA configuration with the provided components (admin only).
+    // Components with an id are updated; without, inserted. Any existing component no
+    // longer listed is deleted if unused, or disabled if grades already reference it.
+    public static function saveCaTypes(array $user): void {
+        if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can change CA settings.');
+        $sid   = (int)$user['school_id'];
+        $comps = body()['components'] ?? [];
+        if (!is_array($comps) || !$comps) respond(null, 422, 'Provide at least one assessment component.');
+
+        DB::conn()->beginTransaction();
+        try {
+            $keep = []; $order = 1;
+            foreach ($comps as $c) {
+                $label = trim((string)($c['label'] ?? ''));
+                if ($label === '') continue;
+                $max     = max(0, min(100, (int)($c['max_score'] ?? 0)));
+                $enabled = !empty($c['is_enabled']) ? 1 : 0;
+                $isExam  = !empty($c['is_exam']) ? 1 : 0;
+                $id      = (int)($c['id'] ?? 0);
+                if ($id && DB::one('SELECT id FROM ca_types WHERE id=? AND school_id=?', [$id, $sid])) {
+                    DB::run('UPDATE ca_types SET label=?,max_score=?,is_enabled=?,is_exam=?,sort_order=? WHERE id=? AND school_id=?',
+                        [$label, $max, $enabled, $isExam, $order, $id, $sid]);
+                    $keep[] = $id;
+                } else {
+                    $keep[] = DB::exec('INSERT INTO ca_types (school_id,label,max_score,is_enabled,is_exam,sort_order) VALUES (?,?,?,?,?,?)',
+                        [$sid, $label, $max, $enabled, $isExam, $order]);
+                }
+                $order++;
+            }
+            foreach (DB::query('SELECT id FROM ca_types WHERE school_id=?', [$sid]) as $row) {
+                $rid = (int)$row['id'];
+                if (in_array($rid, $keep, true)) continue;
+                if (DB::one('SELECT id FROM grades WHERE ca_type_id=? LIMIT 1', [$rid])) {
+                    DB::run('UPDATE ca_types SET is_enabled=0 WHERE id=?', [$rid]);   // keep — grades depend on it
+                } else {
+                    DB::run('DELETE FROM ca_types WHERE id=? AND school_id=?', [$rid, $sid]);
+                }
+            }
+            DB::conn()->commit();
+        } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
+        respond(DB::query('SELECT id,label,max_score,is_enabled,is_exam,sort_order FROM ca_types WHERE school_id=? ORDER BY sort_order,id', [$sid]), 200, 'CA settings saved');
     }
 
     public static function index(array $user): void {
@@ -593,10 +641,11 @@ class GradeController {
         $school = DB::one('SELECT name,address,phone,email,logo_url,motto FROM schools WHERE id=?',[(int)$user['school_id']]);
         $term   = DB::one('SELECT t.name,t.start_date,t.end_date,ay.name AS year FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id WHERE t.id=?',[$termId]);
 
-        // Which CA components count as the "exam" portion (label contains "exam")?
-        $caTypes = DB::query('SELECT id,label,max_score FROM ca_types WHERE school_id=? AND is_enabled=1',[(int)$user['school_id']]);
+        // Which CA components count as the "exam" portion (is_exam flag, or a label
+        // containing "exam" as a fallback for components created before the flag).
+        $caTypes = DB::query('SELECT id,label,max_score,is_exam FROM ca_types WHERE school_id=? AND is_enabled=1',[(int)$user['school_id']]);
         $examIds = [];
-        foreach ($caTypes as $ct) { if (stripos($ct['label'],'exam') !== false) $examIds[(int)$ct['id']] = true; }
+        foreach ($caTypes as $ct) { if ((int)($ct['is_exam'] ?? 0) === 1 || stripos($ct['label'],'exam') !== false) $examIds[(int)$ct['id']] = true; }
 
         // Every grade row for the WHOLE class this term — needed to rank positions & find class hi/lo.
         $rows = DB::query(

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getClasses, createClass, getSubjects,
-         getCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
+         getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
          getStaff, createStaff, importStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
@@ -1396,14 +1396,7 @@ const Attendance = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // GRADES  — CA types, psychomotor, affective, comments, cumulative, report card
 // ═══════════════════════════════════════════════════════════════════════════════
-const DEFAULT_CA = [
-  { id:"ca1",  label:"1st C.A.",      max:10, enabled:true  },
-  { id:"ca2",  label:"2nd C.A.",      max:10, enabled:true  },
-  { id:"asn",  label:"Assignment",    max:10, enabled:true  },
-  { id:"mid",  label:"Mid-Term Test", max:10, enabled:false },
-  { id:"exam", label:"Exam",          max:60, enabled:true  },
-];
-const PSYCHOMOTOR = ["Handwriting","Drawing / Craft","Physical Education","Music","Practical Skills","Participation","Leadership","Team Work","Public Speaking"];
+const PSYCHOMOTOR =["Handwriting","Drawing / Craft","Physical Education","Music","Practical Skills","Participation","Leadership","Team Work","Public Speaking"];
 const AFFECTIVE   = ["Punctuality","Neatness","Attentiveness","Honesty","Cooperation","Diligence","Relationship with Others"];
 const gradeLabel  = v => v>=75?"A1":v>=70?"B2":v>=65?"B3":v>=60?"C4":v>=55?"C5":v>=50?"C6":v>=45?"D7":v>=40?"E8":"F9";
 const gradeColor  = g => g.startsWith("A")?"green":g.startsWith("B")?"blue":g.startsWith("C")?"amber":"red";
@@ -2007,7 +2000,9 @@ const RemarkRangesManager = ({ classes, canManage, flash }) => {
 
 const Grades = () => {
   const [tab,           setTab]           = useState("scores");
-  const [caTypes,       setCaTypes]       = useState(DEFAULT_CA);   // CA Settings modal (local config)
+  const [caEdit,        setCaEdit]        = useState([]);           // CA Settings editor rows
+  const [caMode,        setCaMode]        = useState("separate");   // "separate" | "cumulative"
+  const [caSaving,      setCaSaving]      = useState(false);
   const [showCAConfig,  setShowCAConfig]  = useState(false);
   const [toast,         setToast]         = useState("");
   const [saving,        setSaving]        = useState(false);
@@ -2143,10 +2138,72 @@ const Grades = () => {
     return () => { cancelled = true; };
   }, [tab, rcStudent, cumTermIds]);
 
-  const enabledCA  = caTypes.filter(c => c.enabled);   // for CA Settings modal only
-  const caTotal    = enabledCA.reduce((a, c) => a + c.max, 0);
   const caTotalMax = caRows.reduce((a, c) => a + Number(c.max_score || 0), 0) || 100;
   const rowTotal   = sid => caRows.reduce((a, c) => a + (Number(scores[`${sid}:${c.id}`]) || 0), 0);
+
+  // ── CA Settings editor ──
+  const reloadCaRows = () => getCaTypes().then(res => setCaRows(arrOf(res))).catch(() => {});
+  const openCAConfig = () => {
+    getCaTypesAll().then(res => {
+      const rows = arrOf(res).map(r => ({
+        id: r.id, label: r.label, max_score: Number(r.max_score) || 0,
+        is_enabled: r.is_enabled == null ? true : !!Number(r.is_enabled),
+        is_exam: !!Number(r.is_exam),
+      }));
+      // Ensure exactly one exam row exists.
+      let list = rows.length ? rows : [
+        { label: "1st C.A.", max_score: 20, is_enabled: true, is_exam: false },
+        { label: "2nd C.A.", max_score: 20, is_enabled: true, is_exam: false },
+        { label: "Exam", max_score: 60, is_enabled: true, is_exam: true },
+      ];
+      if (!list.some(r => r.is_exam)) list = [...list, { label: "Exam", max_score: 60, is_enabled: true, is_exam: true }];
+      const caCount = list.filter(r => !r.is_exam).length;
+      setCaMode(caCount <= 1 ? "cumulative" : "separate");
+      setCaEdit(list);
+    }).catch(() => {});
+    setShowCAConfig(true);
+  };
+  const caComps  = caEdit.filter(c => !c.is_exam);
+  const examComp = caEdit.find(c => c.is_exam);
+  const caEditTotal = caEdit.filter(c => c.is_enabled).reduce((a, c) => a + (Number(c.max_score) || 0), 0);
+  const setCaField = (idx, key, val) => setCaEdit(p => p.map((x, j) => j === idx ? { ...x, [key]: val } : x));
+  const addCaComp = () => setCaEdit(p => {
+    const examIdx = p.findIndex(c => c.is_exam);
+    const nc = { label: `C.A. ${p.filter(c => !c.is_exam).length + 1}`, max_score: 10, is_enabled: true, is_exam: false };
+    if (examIdx < 0) return [...p, nc];
+    return [...p.slice(0, examIdx), nc, ...p.slice(examIdx)];   // keep exam last
+  });
+  const removeCaComp = (idx) => setCaEdit(p => p.filter((_, j) => j !== idx));
+  const switchCaMode = (mode) => {
+    setCaMode(mode);
+    setCaEdit(p => {
+      const exam = p.find(c => c.is_exam) || { label: "Exam", max_score: 60, is_enabled: true, is_exam: true };
+      const cas  = p.filter(c => !c.is_exam);
+      if (mode === "cumulative") {
+        const merged = { id: cas[0]?.id, label: "Continuous Assessment",
+          max_score: cas.reduce((a, c) => a + (Number(c.max_score) || 0), 0) || 40, is_enabled: true, is_exam: false };
+        return [merged, exam];
+      }
+      // separate: if only one CA, offer two starter components
+      const base = cas.length > 1 ? cas : [
+        { id: cas[0]?.id, label: "1st C.A.", max_score: 20, is_enabled: true, is_exam: false },
+        { label: "2nd C.A.", max_score: 20, is_enabled: true, is_exam: false },
+      ];
+      return [...base, exam];
+    });
+  };
+  const saveCAConfig = async () => {
+    const clean = caEdit.map(c => ({ ...c, label: (c.label || "").trim() })).filter(c => c.label);
+    if (!clean.some(c => c.is_exam)) { flash("Mark one component as the Exam."); return; }
+    setCaSaving(true);
+    try {
+      await saveCaTypes(clean.map(c => ({ id: c.id, label: c.label, max_score: c.max_score, is_enabled: c.is_enabled ? 1 : 0, is_exam: c.is_exam ? 1 : 0 })));
+      await reloadCaRows();
+      flash("CA settings saved.");
+      setShowCAConfig(false);
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not save CA settings."); }
+    finally { setCaSaving(false); }
+  };
 
   // ── Report-card roster selection + printing ──
   const rcAllSelected = rcRoster.length > 0 && rcRoster.every(s => rcSelected.has(s.id));
@@ -2215,7 +2272,7 @@ const Grades = () => {
       <div className="no-print" style={{ display:"flex", gap:10, alignItems:"center", marginBottom:16, flexWrap:"wrap" }}>
         <Tabs tabs={[{id:"scores",label:"📊 Scores"},{id:"psychomotor",label:"🏃 Psychomotor"},{id:"affective",label:"💙 Affective"},{id:"attendance",label:"🗓 Attendance"},{id:"cumulative",label:"📈 Cumulative"},{id:"reportcard",label:"🖨 Report Card"},{id:"remarks",label:"⚙️ Remark Settings"}]} active={tab} onChange={setTab}/>
         <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
-          {tab==="scores" && <Btn variant="secondary" size="sm" onClick={() => setShowCAConfig(true)}>⚙️ CA Settings</Btn>}
+          {tab==="scores" && <Btn variant="secondary" size="sm" onClick={openCAConfig}>⚙️ CA Settings</Btn>}
           {isEntryTab && <Btn variant="primary" size="sm" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "💾 Save"}</Btn>}
         </div>
       </div>
@@ -2490,37 +2547,62 @@ const Grades = () => {
 
       {/* CA Config Modal */}
       {showCAConfig && (
-        <Modal title="⚙️ Continuous Assessment Settings" onClose={() => setShowCAConfig(false)} width={560}>
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            <p style={{ fontSize:12, color:C.textMid }}>Enable/disable components and set their maximum marks. Total enabled marks must equal 100.</p>
-            {caTypes.map((c, i) => (
-              <div key={c.id} style={{ display:"grid", gridTemplateColumns:"auto 1fr auto 60px", gap:10, alignItems:"center", padding:"9px 12px", borderRadius:9, border:`1px solid ${C.border}`, background:c.enabled?"#F8FAFC":"#fff" }}>
-                <input type="checkbox" checked={c.enabled} onChange={e => setCaTypes(p => p.map((x,j) => j===i ? {...x,enabled:e.target.checked} : x))} style={{ width:15, height:15, cursor:"pointer" }}/>
-                <input value={c.label} onChange={e => setCaTypes(p => p.map((x,j) => j===i ? {...x,label:e.target.value} : x))}
-                  style={{ padding:"6px 10px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, outline:"none" }}
-                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
-                <span style={{ fontSize:12, color:C.textMid, whiteSpace:"nowrap" }}>Max score:</span>
-                <input type="number" value={c.max} onChange={e => setCaTypes(p => p.map((x,j) => j===i ? {...x,max:parseInt(e.target.value)||0} : x))}
-                  style={{ padding:"6px 8px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, outline:"none", textAlign:"center" }}
-                  onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
+        <Modal title="⚙️ Continuous Assessment Settings" onClose={caSaving ? () => {} : () => setShowCAConfig(false)} width={580}>
+          <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            {/* Mode toggle */}
+            <div>
+              <div style={{ fontSize:11, fontWeight:700, color:C.textMid, textTransform:"uppercase", letterSpacing:".4px", marginBottom:6 }}>Assessment Structure</div>
+              <div style={{ display:"flex", gap:2, background:"#F1F5F9", borderRadius:10, padding:4 }}>
+                {[["separate","Separate assessments"],["cumulative","Cumulative assessment"]].map(([v,l]) => (
+                  <button key={v} onClick={() => switchCaMode(v)}
+                    style={{ flex:1, padding:"8px 12px", borderRadius:8, border:"none", fontSize:12, fontWeight:600, cursor:"pointer",
+                      background:caMode===v?C.surface:"transparent", color:caMode===v?C.text:C.textMid,
+                      boxShadow:caMode===v?"0 1px 4px rgba(0,0,0,.08)":"none" }}>{l}</button>
+                ))}
               </div>
-            ))}
+              <div style={{ fontSize:11, color:C.textMuted, marginTop:6 }}>
+                {caMode==="cumulative"
+                  ? "One combined C.A. score, plus the Exam."
+                  : "Several separate C.A. components (e.g. 1st C.A., 2nd C.A., Assignment), plus the Exam."}
+              </div>
+            </div>
+
+            {/* Component rows — CA components then the Exam */}
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {caEdit.map((c, i) => (
+                <div key={i} style={{ display:"grid", gridTemplateColumns:"auto 1fr 92px auto", gap:10, alignItems:"center", padding:"9px 12px", borderRadius:9, border:`1px solid ${c.is_exam?C.accent:C.border}`, background:c.is_exam?C.accentLight:(c.is_enabled?"#F8FAFC":"#fff") }}>
+                  <input type="checkbox" checked={c.is_enabled} title="Enabled" onChange={e => setCaField(i,"is_enabled",e.target.checked)} style={{ width:15, height:15, cursor:"pointer" }}/>
+                  <input value={c.label} onChange={e => setCaField(i,"label",e.target.value)}
+                    style={{ padding:"6px 10px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, outline:"none", color:C.text }}
+                    onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
+                  <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                    <input type="number" min={0} max={100} value={c.max_score} onChange={e => setCaField(i,"max_score",Math.max(0,Math.min(100,parseInt(e.target.value)||0)))}
+                      style={{ width:54, padding:"6px 8px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, outline:"none", textAlign:"center", color:C.text }}
+                      onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
+                    <span style={{ fontSize:11, color:C.textMuted }}>max</span>
+                  </div>
+                  {c.is_exam
+                    ? <Badge color="green" size="sm">Exam</Badge>
+                    : (caMode==="separate" && caComps.length>1
+                        ? <button onClick={() => removeCaComp(i)} title="Remove component" style={{ border:"none", background:"transparent", cursor:"pointer", fontSize:14, opacity:.7 }}>🗑</button>
+                        : <span/>)}
+                </div>
+              ))}
+            </div>
+
+            {caMode==="separate" && (
+              <Btn size="sm" variant="secondary" onClick={addCaComp} style={{ alignSelf:"flex-start" }}>+ Add C.A. component</Btn>
+            )}
+
             <div style={{ padding:"9px 12px", borderRadius:9, fontSize:12, fontWeight:700,
-              background: caTotal===100 ? C.accentLight : C.amberLight,
-              color:      caTotal===100 ? C.accentDark  : "#92400E" }}>
-              Total: {caTotal} / 100 {caTotal===100 ? "✅" : "⚠️ Must equal 100"}
+              background: caEditTotal===100 ? C.accentLight : C.amberLight,
+              color:      caEditTotal===100 ? C.accentDark  : "#92400E" }}>
+              Total (enabled): {caEditTotal} / 100 {caEditTotal===100 ? "✅" : "⚠️ Usually equals 100"}
             </div>
-            <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:C.textMid, textTransform:"uppercase", letterSpacing:".4px", marginBottom:8 }}>Apply Settings To:</div>
-              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                <Btn size="sm" variant="secondary">This Class Only</Btn>
-                <Btn size="sm" variant="amber">🔁 All Classes in School</Btn>
-                <Btn size="sm" variant="secondary">↗ Replicate to Other Terms</Btn>
-              </div>
-            </div>
+
             <div style={{ display:"flex", gap:9, justifyContent:"flex-end", marginTop:4 }}>
-              <Btn variant="secondary" onClick={() => setShowCAConfig(false)}>Cancel</Btn>
-              <Btn variant="primary"   onClick={() => setShowCAConfig(false)}>💾 Save Settings</Btn>
+              <Btn variant="secondary" onClick={() => setShowCAConfig(false)} disabled={caSaving}>Cancel</Btn>
+              <Btn variant="primary" onClick={saveCAConfig} disabled={caSaving}>{caSaving?"Saving…":"💾 Save Settings"}</Btn>
             </div>
           </div>
         </Modal>
