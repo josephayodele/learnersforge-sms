@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getClasses, createClass, getSubjects,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
@@ -65,8 +66,10 @@ const G = `
   @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
   @keyframes spin{to{transform:rotate(360deg);}}
   @keyframes qrScan{0%{top:8px;}50%{top:calc(100% - 8px);}100%{top:8px;}}
-  .fi{animation:fadeIn .25s ease forwards;}
-  .su{animation:slideUp .28s ease forwards;}
+  /* No 'forwards' — a persisted transform would trap position:fixed children
+     (modals/toasts) inside this container instead of the viewport. */
+  .fi{animation:fadeIn .25s ease;}
+  .su{animation:slideUp .28s ease;}
 `;
 
 // ── Primitives ────────────────────────────────────────────────────────────────
@@ -118,7 +121,9 @@ const Toggle = ({value,onChange,label}) => (
     {label&&<span style={{fontSize:13,color:C.textMid}}>{label}</span>}
   </div>
 );
-const Modal = ({title,onClose,children,width=560}) => (
+// Rendered through a portal to document.body so it centers on the viewport even
+// when an ancestor establishes a containing block (CSS transform/filter/etc).
+const Modal = ({title,onClose,children,width=560}) => createPortal(
   <div style={{position:"fixed",inset:0,background:"rgba(13,27,42,.65)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
     <div onClick={e=>e.stopPropagation()} className="su" style={{background:C.surface,borderRadius:16,width:"100%",maxWidth:width,maxHeight:"92vh",overflow:"auto",boxShadow:"0 24px 60px rgba(0,0,0,.2)"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 22px",borderBottom:`1px solid ${C.border}`,position:"sticky",top:0,background:C.surface,zIndex:1}}>
@@ -127,7 +132,8 @@ const Modal = ({title,onClose,children,width=560}) => (
       </div>
       <div style={{padding:"18px 22px"}}>{children}</div>
     </div>
-  </div>
+  </div>,
+  document.body
 );
 const StatCard = ({label,value,sub,color=C.accent,icon}) => (
   <Card>
