@@ -46,9 +46,12 @@ Error generating stack: `+e.message+`
   .su{animation:slideUp .28s ease;}
   /* ── Mobile responsiveness ──
      Collapse inline multi-column grids to a single column and stop fixed-width
-     inputs/tables from overflowing the viewport on small screens. */
-  html,body{max-width:100%;overflow-x:hidden;}
+     inputs/tables from overflowing the viewport on small screens.
+     NOTE: never put overflow-x on html/body — it makes the document the scroll
+     container and breaks the sticky sidebar/topbar. Contain overflow on <main>
+     (a sibling of the sidebar) instead. */
   @media (max-width:768px){
+    main{overflow-x:hidden;}
     /* Collapse inline multi-column grids anywhere (main content + portaled modals). */
     div[style*="grid-template-columns"]{grid-template-columns:1fr !important;}
     input:not([type=checkbox]):not([type=radio]), select, textarea{max-width:100% !important;}
