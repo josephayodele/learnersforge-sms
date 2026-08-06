@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getClasses, createClass, getSubjects,
+         createSubject, deleteSubject,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
@@ -5094,6 +5095,12 @@ const AcademicMgmt = () => {
   const [classList, setClassList] = useState([]);
   const [classReload, setClassReload] = useState(0);
   const [showAddClass, setShowAddClass] = useState(false);
+  const [subjectRows, setSubjectRows] = useState([]);
+  const [subjReload, setSubjReload] = useState(0);
+  const [showAddSubject, setShowAddSubject] = useState(false);
+  const [newSubject, setNewSubject] = useState({ name:"", code:"", department:"" });
+  const [subjSaving, setSubjSaving] = useState(false);
+  const [subjErr, setSubjErr] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -5104,6 +5111,29 @@ const AcademicMgmt = () => {
     }).catch(() => { if (!cancelled) setClassList([]); });
     return () => { cancelled = true; };
   }, [classReload]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSubjects().then(res => { if (!cancelled) setSubjectRows(arrOf(res)); }).catch(() => { if (!cancelled) setSubjectRows([]); });
+    return () => { cancelled = true; };
+  }, [subjReload]);
+
+  const saveSubject = async () => {
+    const name = newSubject.name.trim();
+    if (!name) { setSubjErr("Enter a subject name."); return; }
+    setSubjSaving(true); setSubjErr(null);
+    try {
+      await createSubject({ name, code:newSubject.code.trim(), department:newSubject.department.trim() });
+      setShowAddSubject(false); setNewSubject({ name:"", code:"", department:"" });
+      setSubjReload(k => k + 1);
+    } catch (e) { setSubjErr(e?.message || e?.data?.message || "Could not add subject."); }
+    finally { setSubjSaving(false); }
+  };
+  const removeSubject = async (s) => {
+    if (!window.confirm(`Remove "${s.name}"? It will no longer be available for grading or exams.`)) return;
+    try { await deleteSubject(s.id); setSubjReload(k => k + 1); }
+    catch (e) { window.alert(e?.message || e?.data?.message || "Could not remove subject."); }
+  };
 
   const materials = [
     {id:"M001",title:"Introduction to Algebra",subject:"Mathematics",class:"JSS 3",type:"PDF",   size:"2.4MB",uploader:"Mrs. Adeyemi",date:"2026-05-15"},
@@ -5147,17 +5177,21 @@ const AcademicMgmt = () => {
             <Card>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:13}}>
                 <div style={{fontSize:13,fontWeight:700}}>📖 Subjects & Curriculum</div>
-                <Btn size="sm" variant="primary">+ Add Subject</Btn>
+                <Btn size="sm" variant="primary" onClick={()=>{ setSubjErr(null); setShowAddSubject(true); }}>+ Add Subject</Btn>
               </div>
-              {SUBJECTS.map((s,i)=>(
-                <div key={s} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
+              {subjectRows.length===0 ? (
+                <div style={{padding:"22px 0",textAlign:"center",fontSize:12,color:C.textMuted}}>No subjects yet. Click “+ Add Subject” to create one.</div>
+              ) : subjectRows.map((s,i)=>(
+                <div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
                   <div style={{display:"flex",alignItems:"center",gap:9}}>
-                    <div style={{width:28,height:28,borderRadius:7,background:[C.sky,C.accent,C.amber,C.purple,C.coral,C.teal,C.orange,C.pink,C.sky][i%9]+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13}}>{["📐","📖","🔬","⚡","🧪","📜","🗺️","🏛️","💻"][i%9]}</div>
-                    <span style={{fontSize:13,fontWeight:600}}>{s}</span>
+                    <div style={{width:28,height:28,borderRadius:7,background:[C.sky,C.accent,C.amber,C.purple,C.coral,C.teal,C.orange,C.sky][i%8]+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13}}>{["📐","📖","🔬","⚡","🧪","📜","🗺️","💻"][i%8]}</div>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:600}}>{s.name}</div>
+                      {(s.code||s.department)&&<div style={{fontSize:10,color:C.textMuted}}>{[s.code,s.department].filter(Boolean).join(" · ")}</div>}
+                    </div>
                   </div>
                   <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                    <Badge color="blue" size="sm">All Classes</Badge>
-                    <Btn size="sm" variant="ghost">✏️</Btn>
+                    <Btn size="sm" variant="ghost" onClick={()=>removeSubject(s)} title="Remove subject">🗑</Btn>
                   </div>
                 </div>
               ))}
@@ -5229,6 +5263,23 @@ const AcademicMgmt = () => {
           onClose={()=>setShowAddClass(false)}
           onCreated={()=>{ setShowAddClass(false); setClassReload(k=>k+1); }}
         />
+      )}
+
+      {showAddSubject && (
+        <Modal title="📖 Add Subject" onClose={subjSaving?()=>{}:()=>setShowAddSubject(false)} width={460}>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Input label="Subject Name" value={newSubject.name} onChange={v=>setNewSubject(p=>({...p,name:v}))} placeholder="e.g. Further Mathematics"/>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <Input label="Code (optional)" value={newSubject.code} onChange={v=>setNewSubject(p=>({...p,code:v}))} placeholder="e.g. MTH"/>
+              <Input label="Department (optional)" value={newSubject.department} onChange={v=>setNewSubject(p=>({...p,department:v}))} placeholder="e.g. Sciences"/>
+            </div>
+            {subjErr && <div style={{padding:"9px 12px",borderRadius:8,background:C.coralLight,color:"#991B1B",fontSize:12,fontWeight:500}}>{subjErr}</div>}
+            <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}>
+              <Btn variant="secondary" onClick={()=>setShowAddSubject(false)} disabled={subjSaving}>Cancel</Btn>
+              <Btn variant="primary" onClick={saveSubject} disabled={subjSaving||!newSubject.name.trim()}>{subjSaving?"Saving…":"Add Subject"}</Btn>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {matModal&&<Modal title="📎 Upload Study Material" onClose={()=>setMatModal(false)} width={500}>

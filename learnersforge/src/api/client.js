@@ -185,6 +185,8 @@ export const updateSchoolSettings = data => api.put('/settings/school', data);
 export const getClasses  = () => api.get('/classes');
 export const createClass = data => api.post('/classes', data);
 export const getSubjects = () => api.get('/subjects');
+export const createSubject = data => api.post('/subjects', data);
+export const deleteSubject = id => api.delete(`/subjects/${id}`);
 export const getTerms    = () => api.get('/terms');
 
 export default api;

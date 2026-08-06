@@ -382,11 +382,28 @@ try {
         );
         respond(['id' => $newId, 'name' => $name], 201, 'Class created');
 
-    } elseif ($path === '/api/v1/subjects' && $method === 'GET') {
+    } elseif ($path === '/api/v1/subjects' && !$id && $method === 'GET') {
         respond(DB::query(
             'SELECT * FROM subjects WHERE school_id = ? AND deleted_at IS NULL ORDER BY name',
             [1]
         ));
+
+    } elseif ($path === '/api/v1/subjects' && $method === 'POST') {
+        $u = authGuard();
+        $b = body();
+        $name = trim($b['name'] ?? '');
+        if ($name === '') respond(null, 422, 'Subject name is required.');
+        $sid = (int)$u['school_id'];
+        if (DB::one('SELECT id FROM subjects WHERE school_id=? AND name=? AND deleted_at IS NULL', [$sid, $name]))
+            respond(null, 422, 'A subject with that name already exists.');
+        $newId = DB::exec('INSERT INTO subjects (school_id,name,code,department) VALUES (?,?,?,?)',
+            [$sid, $name, (trim($b['code'] ?? '') ?: null), (trim($b['department'] ?? '') ?: null)]);
+        respond(['id' => $newId, 'name' => $name], 201, 'Subject created');
+
+    } elseif ($path === '/api/v1/subjects' && $id && $method === 'DELETE') {
+        $u = authGuard();
+        DB::run('UPDATE subjects SET deleted_at=NOW() WHERE id=? AND school_id=?', [$id, (int)$u['school_id']]);
+        respond(['deleted' => true]);
 
     } elseif ($path === '/api/v1/terms' && $method === 'GET') {
         respond(DB::query(
