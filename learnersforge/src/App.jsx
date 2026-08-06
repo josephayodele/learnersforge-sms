@@ -70,6 +70,15 @@ const G = `
      (modals/toasts) inside this container instead of the viewport. */
   .fi{animation:fadeIn .25s ease;}
   .su{animation:slideUp .28s ease;}
+  /* ── Mobile responsiveness ──
+     Collapse inline multi-column grids to a single column and stop fixed-width
+     inputs/tables from overflowing the viewport on small screens. */
+  html,body{max-width:100%;overflow-x:hidden;}
+  @media (max-width:768px){
+    /* Collapse inline multi-column grids anywhere (main content + portaled modals). */
+    div[style*="grid-template-columns"]{grid-template-columns:1fr !important;}
+    input:not([type=checkbox]):not([type=radio]), select, textarea{max-width:100% !important;}
+  }
 `;
 
 // ── Primitives ────────────────────────────────────────────────────────────────
@@ -216,64 +225,88 @@ const NAV=[
 ];
 const GROUPS={main:"Main",academic:"Academics",exams:"Examinations",ai:"AI Tools",admin:"Administration",enroll:"Enrollment",ops:"Operations",learning:"Learning"};
 
-const Sidebar = ({active,onNav,collapsed,setCollapsed,school}) => {
+// Track a mobile viewport (drawer nav, compact chrome, single-column layouts).
+const useIsMobile = (bp = 768) => {
+  const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth <= bp : false);
+  useEffect(() => {
+    const on = () => setM(window.innerWidth <= bp);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, [bp]);
+  return m;
+};
+
+const Sidebar = ({active,onNav,collapsed,setCollapsed,school,isMobile,mobileOpen,onClose}) => {
   const groups=[...new Set(NAV.map(n=>n.group))];
+  const collapsedUI = !isMobile && collapsed;   // drawer always shows full labels
+  const asideStyle = isMobile
+    ? {width:C.sidebarW,background:C.navy,display:"flex",flexDirection:"column",position:"fixed",top:0,left:0,height:"100vh",zIndex:1200,overflowY:"auto",overflowX:"hidden",transform:mobileOpen?"translateX(0)":"translateX(-100%)",transition:"transform .25s",boxShadow:mobileOpen?"0 0 40px rgba(0,0,0,.45)":"none"}
+    : {width:collapsedUI?64:C.sidebarW,minHeight:"100vh",background:C.navy,display:"flex",flexDirection:"column",transition:"width .25s",flexShrink:0,position:"sticky",top:0,height:"100vh",overflowY:"auto",overflowX:"hidden"};
   return (
-    <aside className="no-print" style={{width:collapsed?64:C.sidebarW,minHeight:"100vh",background:C.navy,display:"flex",flexDirection:"column",transition:"width .25s",flexShrink:0,position:"sticky",top:0,height:"100vh",overflowY:"auto",overflowX:"hidden"}}>
+    <>
+    {isMobile && mobileOpen && <div className="no-print" onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:1150}}/>}
+    <aside className="no-print" style={asideStyle}>
       <div style={{padding:"18px 14px 14px",display:"flex",alignItems:"center",gap:10,borderBottom:`1px solid ${C.navyLight}`}}>
         <div style={{width:32,height:32,borderRadius:9,background:school?.logo_url?"#fff":C.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0,overflow:"hidden"}}>
           {school?.logo_url ? <img src={school.logo_url} alt="" style={{width:"100%",height:"100%",objectFit:"contain"}}/> : "⚡"}
         </div>
-        {!collapsed&&<span style={{color:"#fff",fontWeight:700,fontSize:15,letterSpacing:"-.3px"}}>{school?.name || "LearnersForge"}</span>}
+        {!collapsedUI&&<span style={{color:"#fff",fontWeight:700,fontSize:15,letterSpacing:"-.3px",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{school?.name || "LearnersForge"}</span>}
+        {isMobile&&<button onClick={onClose} aria-label="Close menu" style={{background:"transparent",border:"none",color:"#8DA4C0",fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>}
       </div>
       <nav style={{flex:1,padding:"10px 8px"}}>
         {groups.map(g=>{
           const items=NAV.filter(n=>n.group===g);
           return (
             <div key={g} style={{marginBottom:18}}>
-              {!collapsed&&<div style={{fontSize:9,fontWeight:700,color:"#4B6080",letterSpacing:"1.2px",textTransform:"uppercase",padding:"0 8px 6px"}}>{GROUPS[g]}</div>}
+              {!collapsedUI&&<div style={{fontSize:9,fontWeight:700,color:"#4B6080",letterSpacing:"1.2px",textTransform:"uppercase",padding:"0 8px 6px"}}>{GROUPS[g]}</div>}
               {items.map(item=>(
                 <button key={item.id} onClick={()=>onNav(item.id)}
-                  style={{width:"100%",display:"flex",alignItems:"center",gap:collapsed?0:9,padding:collapsed?"8px 0":"8px 10px",justifyContent:collapsed?"center":"flex-start",borderRadius:9,border:"none",cursor:"pointer",background:active===item.id?C.accent+"22":"transparent",color:active===item.id?C.accent:"#8DA4C0",fontSize:12,fontWeight:active===item.id?600:400,transition:"all .15s",marginBottom:1}}
+                  style={{width:"100%",display:"flex",alignItems:"center",gap:collapsedUI?0:9,padding:collapsedUI?"8px 0":"8px 10px",justifyContent:collapsedUI?"center":"flex-start",borderRadius:9,border:"none",cursor:"pointer",background:active===item.id?C.accent+"22":"transparent",color:active===item.id?C.accent:"#8DA4C0",fontSize:12,fontWeight:active===item.id?600:400,transition:"all .15s",marginBottom:1}}
                   onMouseEnter={e=>{if(active!==item.id){e.currentTarget.style.background="#1A2E4540";e.currentTarget.style.color="#C8D8E8";}}}
                   onMouseLeave={e=>{if(active!==item.id){e.currentTarget.style.background="transparent";e.currentTarget.style.color="#8DA4C0";}}}
                 >
                   <span style={{fontSize:15}}>{item.icon}</span>
-                  {!collapsed&&<span>{item.label}</span>}
-                  {!collapsed&&active===item.id&&<div style={{marginLeft:"auto",width:5,height:5,borderRadius:"50%",background:C.accent}}/>}
+                  {!collapsedUI&&<span>{item.label}</span>}
+                  {!collapsedUI&&active===item.id&&<div style={{marginLeft:"auto",width:5,height:5,borderRadius:"50%",background:C.accent}}/>}
                 </button>
               ))}
             </div>
           );
         })}
       </nav>
-      <button onClick={()=>setCollapsed(!collapsed)} style={{padding:"12px 14px",background:"transparent",border:"none",color:"#4B6080",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:collapsed?"center":"flex-start",gap:8,fontSize:11,borderTop:`1px solid ${C.navyLight}`}}>
-        <span style={{fontSize:15}}>{collapsed?"→":"←"}</span>{!collapsed&&"Collapse"}
-      </button>
+      {!isMobile&&(
+        <button onClick={()=>setCollapsed(!collapsed)} style={{padding:"12px 14px",background:"transparent",border:"none",color:"#4B6080",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:collapsed?"center":"flex-start",gap:8,fontSize:11,borderTop:`1px solid ${C.navyLight}`}}>
+          <span style={{fontSize:15}}>{collapsed?"→":"←"}</span>{!collapsed&&"Collapse"}
+        </button>
+      )}
     </aside>
+    </>
   );
 };
 
 // ── Topbar ────────────────────────────────────────────────────────────────────
 const TITLES={dashboard:"Dashboard",students:"Student Management",staff:"Staff Management",attendance:"Attendance",grades:"Grades & Report Cards",timetable:"Timetable",cbt:"CBT Exams","cbt-create":"Create Exam","cbt-take":"Take Exam","ai-tools":"AI Teaching Tools",fees:"Fees & Finance",messaging:"Messaging",hostel:"Hostel Management",inventory:"Inventory",library:"Library Management",settings:"Settings","admissions":"Admissions & Enrollment","academic-mgmt":"Academic Management","student-extras":"Student Records","transport":"Transport Management","certificates":"Certificates & ID Cards","multi-branch":"Multi-Branch Management","cms":"Website & CMS","hr":"HR Module","online-learning":"Online Learning","communications":"Communications","analytics":"Reports & Analytics"};
-const Topbar = ({page,onNav,onLogout,school}) => (
-  <header className="no-print" style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"0 24px",height:60,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10}}>
-    <div>
-      <h1 style={{fontSize:16,fontWeight:700,color:C.text,margin:0}}>{TITLES[page]||page}</h1>
-      <div style={{fontSize:10,color:C.textMuted}}>2025/2026 · 2nd Term</div>
+const Topbar = ({page,onNav,onLogout,school,isMobile,onMenu}) => (
+  <header className="no-print" style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:isMobile?"0 12px":"0 24px",height:60,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10,gap:8}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+      {isMobile&&<button onClick={onMenu} aria-label="Open menu" style={{background:"#F1F5F9",border:"none",borderRadius:8,padding:"7px 11px",fontSize:16,color:C.textMid,cursor:"pointer",lineHeight:1,flexShrink:0}}>☰</button>}
+      <div style={{minWidth:0}}>
+        <h1 style={{fontSize:isMobile?14:16,fontWeight:700,color:C.text,margin:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{TITLES[page]||page}</h1>
+        {!isMobile&&<div style={{fontSize:10,color:C.textMuted}}>2025/2026 · 2nd Term</div>}
+      </div>
     </div>
-    <div style={{display:"flex",alignItems:"center",gap:12}}>
+    <div style={{display:"flex",alignItems:"center",gap:isMobile?6:12,flexShrink:0}}>
       <button style={{background:"#F1F5F9",border:"none",borderRadius:8,padding:"6px 12px",fontSize:12,color:C.textMid,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
         🔔<span style={{background:C.coral,color:"#fff",borderRadius:"50%",width:14,height:14,fontSize:9,display:"flex",alignItems:"center",justifyContent:"center"}}>3</span>
       </button>
       <div onClick={()=>onNav("settings")} style={{display:"flex",alignItems:"center",gap:9,cursor:"pointer",padding:"4px 10px",borderRadius:8,transition:"background .15s"}} onMouseEnter={e=>e.currentTarget.style.background="#F1F5F9"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
         <Avatar initials="SA" size={30} color={C.accent}/>
-        <div style={{lineHeight:1.3}}>
+        {!isMobile&&<div style={{lineHeight:1.3}}>
           <div style={{fontSize:12,fontWeight:600}}>Super Admin</div>
           <div style={{fontSize:10,color:C.textMuted}}>{school?.name || "—"}</div>
-        </div>
+        </div>}
       </div>
-      <button onClick={onLogout} title="Log out" style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 11px",fontSize:12,color:C.textMid,cursor:"pointer",fontFamily:"Sora,sans-serif"}} onMouseEnter={e=>{e.currentTarget.style.background=C.coralLight;e.currentTarget.style.color=C.coral;e.currentTarget.style.borderColor=C.coral+"55";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=C.textMid;e.currentTarget.style.borderColor=C.border;}}>↪ Logout</button>
+      <button onClick={onLogout} title="Log out" style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 11px",fontSize:12,color:C.textMid,cursor:"pointer",fontFamily:"Sora,sans-serif"}} onMouseEnter={e=>{e.currentTarget.style.background=C.coralLight;e.currentTarget.style.color=C.coral;e.currentTarget.style.borderColor=C.coral+"55";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=C.textMid;e.currentTarget.style.borderColor=C.border;}}>↪{isMobile?"":" Logout"}</button>
     </div>
   </header>
 );
@@ -6395,6 +6428,8 @@ const StudentPortal = ({ user, school, onLogout }) => {
 
   const brand = school?.name || "LearnersForge";
   const header = (
+    <>
+    <style>{G}</style>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 20px", background:C.surface, borderBottom:`1px solid ${C.border}` }}>
       <div style={{ display:"flex", alignItems:"center", gap:11 }}>
         {school?.logo_url
@@ -6407,6 +6442,7 @@ const StudentPortal = ({ user, school, onLogout }) => {
         <Btn variant="secondary" size="sm" onClick={onLogout}>↩ Logout</Btn>
       </div>
     </div>
+    </>
   );
 
   // ── Taking an exam ──
@@ -6580,7 +6616,10 @@ export default function App() {
   const [meLoading, setMeLoading] = useState(true);
   // Navigate. Generic navigation clears the selected exam so the sidebar "Take Exam"
   // always starts on the picker; openExam sets it directly and bypasses this.
+  const isMobile = useIsMobile();
+  const [mobileNav, setMobileNav] = useState(false);
   const go = p => { setExamId(null); setPage(p); };
+  const handleNav = p => { setMobileNav(false); go(p); };   // sidebar/topbar nav also closes the mobile drawer
   const openExam = id => { setExamId(id); setPage("cbt-take"); };
   const openResults = id => { setExamId(id); setPage("cbt-results"); };
 
@@ -6661,10 +6700,12 @@ export default function App() {
     <>
       <style>{G}</style>
       <div style={{ display:"flex", minHeight:"100vh" }}>
-        <Sidebar active={page} onNav={go} collapsed={collapsed} setCollapsed={setCollapsed} school={school}/>
+        <Sidebar active={page} onNav={handleNav} collapsed={collapsed} setCollapsed={setCollapsed} school={school}
+                 isMobile={isMobile} mobileOpen={mobileNav} onClose={()=>setMobileNav(false)}/>
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
-          <Topbar page={page} onNav={go} onLogout={handleLogout} school={school}/>
-          <main style={{ flex:1, padding:22, overflowY:"auto" }}>
+          <Topbar page={page} onNav={handleNav} onLogout={handleLogout} school={school}
+                  isMobile={isMobile} onMenu={()=>setMobileNav(true)}/>
+          <main style={{ flex:1, padding:isMobile?"14px 12px":22, overflowY:"auto" }}>
             {PAGES[page] || <Dashboard onNav={go}/>}
           </main>
         </div>
