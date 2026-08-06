@@ -889,6 +889,8 @@ const Students = () => {
   const [arm,setArm]=useState("");
   const [page,setPage]=useState(1);
   const [perPage,setPerPage]=useState(25);
+  const [sort,setSort]=useState("name");   // name | id | class | email
+  const [dir,setDir]=useState("asc");
   const [selected,setSelected]=useState(null);
   const [students,setStudents]=useState([]);
   const [meta,setMeta]=useState({total:0,page:1,per_page:25,pages:1});
@@ -931,7 +933,7 @@ const Students = () => {
   useEffect(()=>{
     let cancelled=false;
     setLoading(true); setError(null);
-    const params={ page, per_page:perPage };
+    const params={ page, per_page:perPage, sort, dir };
     if(search) params.search=search;
     if(classId) params.class_id=classId;
     else if(classForm) params.form=classForm;
@@ -950,7 +952,11 @@ const Students = () => {
       .catch(err=>{ if(!cancelled) setError(err?.message || "Failed to load students."); })
       .finally(()=>{ if(!cancelled) setLoading(false); });
     return ()=>{ cancelled=true; };
-  },[search,classId,classForm,page,perPage,reloadKey]);
+  },[search,classId,classForm,page,perPage,sort,dir,reloadKey]);
+
+  // Click a column header to sort (toggles direction on the active column).
+  const toggleSort = col => { if(sort===col){ setDir(d=>d==="asc"?"desc":"asc"); } else { setSort(col); setDir("asc"); } setPage(1); };
+  const sortArrow = col => sort===col ? (dir==="asc" ? " ▲" : " ▼") : "";
 
   const clearFilters=()=>{ setSearchInput(""); setSearch(""); setClassForm(""); setArm(""); setPage(1); };
   const total = meta?.total ?? 0;
@@ -1089,7 +1095,11 @@ const Students = () => {
         <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
           <thead><tr style={{borderBottom:`1px solid ${C.border}`,background:"#F8FAFC"}}>
             <th style={{padding:"10px 15px",width:34}}><input type="checkbox" checked={allOnPage} onChange={toggleAll} title="Select all on this page" style={{width:15,height:15,cursor:"pointer"}}/></th>
-            {["Student","ID","Class","GPA","Fees","Action"].map(h=><th key={h} style={{padding:"10px 15px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase",letterSpacing:".5px"}}>{h}</th>)}
+            {[["Student","name"],["ID","id"],["Class","class"],["GPA",null],["Fees",null],["Action",null]].map(([h,col])=>(
+              <th key={h} onClick={col?()=>toggleSort(col):undefined}
+                  style={{padding:"10px 15px",textAlign:"left",fontSize:10,fontWeight:700,color:col&&sort===col?C.accentDark:C.textMuted,textTransform:"uppercase",letterSpacing:".5px",cursor:col?"pointer":"default",userSelect:"none",whiteSpace:"nowrap"}}
+                  title={col?"Click to sort":undefined}>{h}{col?<span style={{color:C.accent}}>{sortArrow(col)}</span>:null}</th>
+            ))}
           </tr></thead>
           <tbody>
             {students.length===0 ? (

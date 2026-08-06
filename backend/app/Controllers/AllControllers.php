@@ -57,6 +57,15 @@ class StudentController {
         if ($classId) { $where[] = 's.class_id = ?'; $params[] = $classId; }
         elseif ($form !== '') { $where[] = 'c.name LIKE ?'; $params[] = $form . '%'; }
 
+        // Sortable columns (whitelisted to prevent SQL injection).
+        $dir = strtolower($_GET['dir'] ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
+        switch ($_GET['sort'] ?? 'name') {
+            case 'id':    $orderBy = "s.student_id $dir"; break;
+            case 'class': $orderBy = "c.name $dir, u.last_name ASC, u.first_name ASC"; break;
+            case 'email': $orderBy = "u.email $dir"; break;
+            case 'name':
+            default:      $orderBy = "u.last_name $dir, u.first_name $dir"; break;
+        }
         $sql = 'SELECT s.id, s.student_id, s.admission_date, s.guardian_name, s.guardian_phone,
                        u.first_name, u.last_name, u.email, u.phone, u.gender, u.date_of_birth,
                        c.name AS class_name, c.id AS class_id
@@ -64,7 +73,7 @@ class StudentController {
                 JOIN users u ON u.id = s.user_id
                 JOIN classes c ON c.id = s.class_id
                 WHERE u.deleted_at IS NULL AND s.deleted_at IS NULL AND ' . implode(' AND ', $where) .
-               ' ORDER BY u.last_name, u.first_name LIMIT ? OFFSET ?';
+               ' ORDER BY ' . $orderBy . ' LIMIT ? OFFSET ?';
         $params[] = $limit; $params[] = $offset;
 
         // Count query joins classes too, so a c.name (form) filter resolves.
@@ -84,18 +93,38 @@ class StudentController {
 
     public static function store(array $user): void {
         $b = body();
+        // Blank optional fields must become NULL — an empty string is rejected by the
+        // gender ENUM and date_of_birth DATE columns under MySQL strict mode.
+        $nn = fn($k) => (isset($b[$k]) && trim((string)$b[$k]) !== '') ? trim((string)$b[$k]) : null;
+        $first = trim((string)($b['first_name'] ?? ''));
+        $last  = trim((string)($b['last_name'] ?? ''));
+        $email = trim((string)($b['email'] ?? ''));
+        if ($first === '' || $last === '' || $email === '') respond(null, 422, 'First name, last name and email are required.');
+        $gender = in_array($b['gender'] ?? '', ['male','female','other'], true) ? $b['gender'] : null;
+        $dob    = self::normalizeDate($b['date_of_birth'] ?? null);
+
         DB::conn()->beginTransaction();
         try {
             $uid = DB::exec('INSERT INTO users (school_id,first_name,last_name,email,phone,password,role,gender,date_of_birth) VALUES (?,?,?,?,?,?,?,?,?)',
-                [(int)$user['school_id'],$b['first_name'],$b['last_name'],$b['email'],$b['phone']??null,
-                 password_hash($b['password']??'password123',PASSWORD_DEFAULT),'student',$b['gender']??null,$b['date_of_birth']??null]);
+                [(int)$user['school_id'],$first,$last,$email,$nn('phone'),
+                 password_hash($b['password'] ?? 'password123',PASSWORD_DEFAULT),'student',$gender,$dob]);
             $sid_gen = !empty($b['student_id'])       ? $b['student_id']       : 'ST' . str_pad((string)$uid, 4, '0', STR_PAD_LEFT);
             $admNo   = !empty($b['admission_number']) ? $b['admission_number'] : 'GFA/' . date('Y') . '/' . str_pad((string)$uid, 3, '0', STR_PAD_LEFT);
             $stid = DB::exec('INSERT INTO students (user_id,student_id,class_id,admission_number,admission_date,guardian_name,guardian_phone,guardian_email,guardian_address,medical_notes,previous_school) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                [$uid,$sid_gen,$b['class_id']??1,$admNo,date('Y-m-d'),$b['guardian_name']??null,$b['guardian_phone']??null,$b['guardian_email']??null,$b['guardian_address']??null,$b['medical_notes']??null,$b['previous_school']??null]);
+                [$uid,$sid_gen,(int)($b['class_id'] ?? 1),$admNo,date('Y-m-d'),$nn('guardian_name'),$nn('guardian_phone'),$nn('guardian_email'),$nn('guardian_address'),$nn('medical_notes'),$nn('previous_school')]);
             DB::conn()->commit();
             respond(['student_id' => $stid, 'user_id' => $uid, 'student_code' => $sid_gen], 201, 'Student created');
-        } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
+        } catch (Throwable $e) {
+            DB::conn()->rollBack();
+            $msg = $e->getMessage();
+            if (stripos($msg, 'Duplicate') !== false) {
+                if     (stripos($msg, 'email')     !== false) respond(null, 422, 'A user with this email already exists.');
+                elseif (stripos($msg, 'admission') !== false) respond(null, 422, 'That admission number is already in use.');
+                elseif (stripos($msg, 'student_id') !== false) respond(null, 422, 'That student ID is already in use.');
+                respond(null, 422, 'A duplicate value was provided.');
+            }
+            throw $e;
+        }
     }
 
     // Bulk import: all rows are enrolled into the single class chosen in the form.
