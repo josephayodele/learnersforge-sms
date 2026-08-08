@@ -145,6 +145,9 @@ try {
     } elseif ($path === '/api/v1/staff' && $id && $method === 'GET') {
         StaffController::show(authGuard(), $id);
 
+    } elseif ($path === '/api/v1/staff' && $id && ($method === 'PUT' || $method === 'PATCH')) {
+        StaffController::update(authGuard(), $id);
+
     } elseif ($path === '/api/v1/staff' && $id && $method === 'DELETE') {
         StaffController::destroy(authGuard(), $id);
 

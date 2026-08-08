@@ -62,6 +62,7 @@ export const bulkDeleteStudents = ids => api.post('/students/bulk-delete', { ids
 export const getStaff   = () => api.get('/staff');
 export const getStaffMember = id => api.get(`/staff/${id}`);
 export const createStaff = data => api.post('/staff', data);
+export const updateStaff = (id, data) => api.put(`/staff/${id}`, data);
 export const importStaff = staff => api.post('/staff/import', { staff });
 export const getStaffAssignments  = id => api.get(`/staff/${id}/assignments`);
 export const saveStaffAssignments = (id, data) => api.post(`/staff/${id}/assignments`, data);

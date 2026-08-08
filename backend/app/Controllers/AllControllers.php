@@ -210,9 +210,41 @@ class StudentController {
         $b = body();
         $s = DB::one('SELECT s.*,u.id AS uid FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=?',[$id,(int)$user['school_id']]);
         if (!$s) respond(null,404,'Student not found');
-        if (!empty($b['class_id'])) DB::run('UPDATE students SET class_id=?,updated_at=NOW() WHERE id=?',[$b['class_id'],$id]);
-        if (!empty($b['first_name'])||!empty($b['last_name'])) DB::run('UPDATE users SET first_name=COALESCE(?,first_name),last_name=COALESCE(?,last_name),updated_at=NOW() WHERE id=?',[$b['first_name']??null,$b['last_name']??null,$s['uid']]);
-        respond(['updated' => true]);
+        $uid = (int)$s['uid'];
+        $nn  = fn($k) => (isset($b[$k]) && trim((string)$b[$k]) !== '') ? trim((string)$b[$k]) : null;
+
+        try {
+            // ── users row (account + person) ──
+            $sets = []; $params = [];
+            foreach (['first_name','last_name','email'] as $f) {           // required — only overwrite with a value
+                if (isset($b[$f]) && trim((string)$b[$f]) !== '') { $sets[] = "$f=?"; $params[] = trim((string)$b[$f]); }
+            }
+            if (array_key_exists('phone', $b))         { $sets[] = "phone=?";         $params[] = $nn('phone'); }
+            if (array_key_exists('gender', $b))        { $sets[] = "gender=?";        $params[] = in_array($b['gender'] ?? '', ['male','female','other'], true) ? $b['gender'] : null; }
+            if (array_key_exists('date_of_birth', $b)) { $sets[] = "date_of_birth=?"; $params[] = self::normalizeDate($b['date_of_birth'] ?? null); }
+            if (!empty($b['password']))                { $sets[] = "password=?";      $params[] = password_hash($b['password'], PASSWORD_DEFAULT); }
+            if ($sets) { $sets[] = "updated_at=NOW()"; $params[] = $uid; DB::run('UPDATE users SET '.implode(',', $sets).' WHERE id=?', $params); }
+
+            // ── students row (enrolment details) ──
+            $ss = []; $sp = [];
+            if (!empty($b['class_id'])) { $ss[] = "class_id=?"; $sp[] = (int)$b['class_id']; }
+            if (isset($b['student_id']) && trim((string)$b['student_id']) !== '') { $ss[] = "student_id=?"; $sp[] = trim((string)$b['student_id']); } // NOT NULL
+            foreach (['admission_number','guardian_name','guardian_phone','guardian_email','guardian_address','medical_notes','previous_school'] as $f) {
+                if (array_key_exists($f, $b)) { $ss[] = "$f=?"; $sp[] = $nn($f); }
+            }
+            if ($ss) { $ss[] = "updated_at=NOW()"; $sp[] = $id; DB::run('UPDATE students SET '.implode(',', $ss).' WHERE id=?', $sp); }
+
+            respond(['updated' => true]);
+        } catch (Throwable $e) {
+            $msg = $e->getMessage();
+            if (stripos($msg, 'Duplicate') !== false) {
+                if     (stripos($msg, 'email')      !== false) respond(null, 422, 'A user with this email already exists.');
+                elseif (stripos($msg, 'admission')  !== false) respond(null, 422, 'That admission number is already in use.');
+                elseif (stripos($msg, 'student_id') !== false) respond(null, 422, 'That student ID is already in use.');
+                respond(null, 422, 'A duplicate value was provided.');
+            }
+            throw $e;
+        }
     }
 
     public static function destroy(array $user, int $id): void {
@@ -255,7 +287,7 @@ class StaffController {
         respond(DB::query('SELECT s.*,u.first_name,u.last_name,u.email,u.phone,u.gender,u.is_active FROM staff s JOIN users u ON u.id=s.user_id WHERE u.school_id=? AND u.deleted_at IS NULL ORDER BY u.last_name',[$sid]));
     }
     public static function show(array $user, int $id): void {
-        $s = DB::one('SELECT s.*,u.first_name,u.last_name,u.email,u.phone,u.gender FROM staff s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=?',[$id,(int)$user['school_id']]);
+        $s = DB::one('SELECT s.*,u.first_name,u.last_name,u.email,u.phone,u.gender,u.role FROM staff s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=?',[$id,(int)$user['school_id']]);
         if (!$s) respond(null,404,'Staff not found');
         $s['subjects'] = DB::query('SELECT sub.name FROM class_subjects cs JOIN subjects sub ON sub.id=cs.subject_id WHERE cs.teacher_id=? GROUP BY sub.id',[$s['user_id']]);
         $s['payroll']  = DB::query('SELECT * FROM payroll WHERE staff_id=? ORDER BY year DESC,month DESC LIMIT 6',[$id]);
@@ -277,6 +309,57 @@ class StaffController {
             DB::conn()->commit();
             respond(['staff_code'=>$code,'user_id'=>$uid],201,'Staff created');
         } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
+    }
+
+    // Map free-text role labels onto the users.role enum (never 'student').
+    public static function normalizeRole($raw): string {
+        $r = strtolower(trim((string)$raw));
+        if ($r === '') return 'teacher';
+        if (str_contains($r, 'account') || str_contains($r, 'bursar')) return 'accountant';
+        if (str_contains($r, 'admin') || str_contains($r, 'principal') || str_contains($r, 'head')) return 'school_admin';
+        if (str_contains($r, 'parent')) return 'parent';
+        return 'teacher';
+    }
+
+    // Edit a staff member's profile / account (admin only). Password optional.
+    public static function update(array $user, int $id): void {
+        if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can edit staff.');
+        $sid = (int)$user['school_id'];
+        $st  = DB::one('SELECT s.*, u.id AS uid FROM staff s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=?', [$id, $sid]);
+        if (!$st) respond(null, 404, 'Staff not found');
+        $uid = (int)$st['uid'];
+        $b   = body();
+        $nn  = fn($k) => (isset($b[$k]) && trim((string)$b[$k]) !== '') ? trim((string)$b[$k]) : null;
+
+        try {
+            $sets = []; $params = [];
+            foreach (['first_name','last_name','email'] as $f) {
+                if (isset($b[$f]) && trim((string)$b[$f]) !== '') { $sets[] = "$f=?"; $params[] = trim((string)$b[$f]); }
+            }
+            if (array_key_exists('phone', $b))  { $sets[] = "phone=?";  $params[] = $nn('phone'); }
+            if (array_key_exists('gender', $b)) { $sets[] = "gender=?"; $params[] = in_array($b['gender'] ?? '', ['male','female','other'], true) ? $b['gender'] : null; }
+            if (isset($b['role']) && trim((string)$b['role']) !== '') { $sets[] = "role=?"; $params[] = self::normalizeRole($b['role']); }
+            if (!empty($b['password'])) { $sets[] = "password=?"; $params[] = password_hash($b['password'], PASSWORD_DEFAULT); }
+            if ($sets) { $sets[] = "updated_at=NOW()"; $params[] = $uid; DB::run('UPDATE users SET '.implode(',', $sets).' WHERE id=?', $params); }
+
+            $ss = []; $sp = [];
+            foreach (['department','designation','qualification'] as $f) {
+                if (array_key_exists($f, $b)) { $ss[] = "$f=?"; $sp[] = $nn($f); }
+            }
+            if (array_key_exists('hire_date', $b)) { $ss[] = "hire_date=?"; $sp[] = StudentController::normalizeDate($b['hire_date'] ?? null); }
+            if (isset($b['staff_id']) && trim((string)$b['staff_id']) !== '') { $ss[] = "staff_id=?"; $sp[] = trim((string)$b['staff_id']); }
+            if ($ss) { $ss[] = "updated_at=NOW()"; $sp[] = $id; DB::run('UPDATE staff SET '.implode(',', $ss).' WHERE id=?', $sp); }
+
+            respond(['updated' => true]);
+        } catch (Throwable $e) {
+            $msg = $e->getMessage();
+            if (stripos($msg, 'Duplicate') !== false) {
+                if     (stripos($msg, 'email')    !== false) respond(null, 422, 'A user with this email already exists.');
+                elseif (stripos($msg, 'staff_id') !== false) respond(null, 422, 'That staff ID is already in use.');
+                respond(null, 422, 'A duplicate value was provided.');
+            }
+            throw $e;
+        }
     }
 
     // Bulk import staff from a CSV/Excel upload. Admin only. Each row is its own

@@ -4,9 +4,9 @@ import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getClasses, createClass, getSubjects,
          createSubject, deleteSubject,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
-         createExam, createStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
+         createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
-         getStaff, createStaff, importStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
+         getStaff, createStaff, updateStaff, getStaffMember, importStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
          getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
          getExamSubmissions, getSubmission, gradeSubmission,
@@ -451,16 +451,35 @@ const Dashboard = ({onNav}) => {
 };
 
 // ── Add Student modal ───────────────────────────────────────────────────────
-const AddStudentModal = ({ onClose, onCreated }) => {
+const AddStudentModal = ({ onClose, onCreated, edit }) => {
+  const isEdit = !!edit;
   const empty = { first_name:"", last_name:"", email:"", phone:"", gender:"",
                   date_of_birth:"", class_id:"", guardian_name:"", guardian_phone:"",
                   guardian_email:"", guardian_address:"", admission_number:"",
-                  student_id:"", medical_notes:"", previous_school:"" };
+                  student_id:"", medical_notes:"", previous_school:"", password:"" };
   const [form,setForm]=useState(empty);
   const [classes,setClasses]=useState([]);
   const [saving,setSaving]=useState(false);
   const [error,setError]=useState(null);
   const set=(k)=>(v)=>setForm(p=>({...p,[k]:v}));
+
+  // Edit mode: pull the full record and prefill.
+  useEffect(()=>{
+    if(!isEdit) return;
+    let cancelled=false;
+    getStudent(edit.id).then(res=>{
+      if(cancelled) return;
+      const s = res?.data ?? res ?? {};
+      setForm(p=>({ ...p,
+        first_name:s.first_name||"", last_name:s.last_name||"", email:s.email||"", phone:s.phone||"",
+        gender:s.gender||"", date_of_birth:(s.date_of_birth||"").slice(0,10), class_id:s.class_id?String(s.class_id):"",
+        guardian_name:s.guardian_name||"", guardian_phone:s.guardian_phone||"", guardian_email:s.guardian_email||"",
+        guardian_address:s.guardian_address||"", admission_number:s.admission_number||"", student_id:s.student_id||"",
+        medical_notes:s.medical_notes||"", previous_school:s.previous_school||"", password:"" }));
+    }).catch(()=>{});
+    return ()=>{ cancelled=true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[isEdit]);
 
   useEffect(()=>{
     let cancelled=false;
@@ -486,10 +505,13 @@ const AddStudentModal = ({ onClose, onCreated }) => {
     if(!form.class_id){ setError("Please select a class."); return; }
     setSaving(true); setError(null);
     try{
-      await createStudent({ ...form, class_id:Number(form.class_id) });
+      const payload={ ...form, class_id:Number(form.class_id) };
+      if(!payload.password) delete payload.password;   // keep current password when blank
+      if(isEdit) await updateStudent(edit.id, payload);
+      else       await createStudent(payload);
       onCreated();
     }catch(err){
-      setError(err?.message || err?.data?.error || "Failed to create student.");
+      setError(err?.message || err?.data?.error || err?.data?.message || `Failed to ${isEdit?"update":"create"} student.`);
       setSaving(false);
     }
   };
@@ -500,7 +522,7 @@ const AddStudentModal = ({ onClose, onCreated }) => {
   ];
 
   return (
-    <Modal title="Add Student" onClose={saving?()=>{}:onClose} width={620}>
+    <Modal title={isEdit?"Edit Student":"Add Student"} onClose={saving?()=>{}:onClose} width={620}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
         <Input label="First Name"  value={form.first_name}    onChange={set("first_name")}    placeholder="e.g. Chidi"/>
         <Input label="Last Name"   value={form.last_name}     onChange={set("last_name")}     placeholder="e.g. Okonkwo"/>
@@ -517,11 +539,13 @@ const AddStudentModal = ({ onClose, onCreated }) => {
         <Input label="Student ID"     value={form.student_id}      onChange={set("student_id")}      placeholder="Auto-generated if blank"/>
         <Input label="Previous School" value={form.previous_school} onChange={set("previous_school")} placeholder="Former school (optional)" style={{gridColumn:"1 / -1"}}/>
         <Input label="Medical Notes"  value={form.medical_notes}   onChange={set("medical_notes")}   placeholder="Allergies, conditions… (optional)" style={{gridColumn:"1 / -1"}}/>
+        <Input label="Password" value={form.password} onChange={set("password")} type="password"
+               placeholder={isEdit?"Leave blank to keep current":"Default: password123"} style={{gridColumn:"1 / -1"}}/>
       </div>
       {error && <div style={{marginTop:14,padding:"9px 12px",borderRadius:8,background:C.coralLight||"#FEE2E2",color:C.coral,fontSize:12,fontWeight:600}}>{error}</div>}
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
         <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
-        <Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Saving…":"Create Student"}</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Saving…":(isEdit?"Save Changes":"Create Student")}</Btn>
       </div>
     </Modal>
   );
@@ -936,6 +960,7 @@ const Students = () => {
   const [error,setError]=useState(null);
   const [reloadKey,setReloadKey]=useState(0);
   const [showAdd,setShowAdd]=useState(false);
+  const [editStu,setEditStu]=useState(null);    // student being edited
   const [showImport,setShowImport]=useState(false);
   const [sel,setSel]=useState(()=>new Set());   // selected student ids (for bulk delete)
   const [del,setDel]=useState(null);            // pending delete confirmation { ids:[], label }
@@ -1086,6 +1111,12 @@ const Students = () => {
           onCreated={()=>{ setShowAdd(false); setReloadKey(k=>k+1); }}
         />
       )}
+      {editStu && (
+        <AddStudentModal edit={editStu}
+          onClose={()=>setEditStu(null)}
+          onCreated={()=>{ setEditStu(null); flash("Student updated."); setReloadKey(k=>k+1); }}
+        />
+      )}
       {showImport && (
         <ImportStudentsModal
           onClose={()=>setShowImport(false)}
@@ -1149,7 +1180,7 @@ const Students = () => {
                 <td style={{padding:"10px 15px",fontSize:12}}>{s.class}</td>
                 <td style={{padding:"10px 15px",fontSize:13,fontWeight:700,color:s.gpa>=3.5?C.accentDark:s.gpa>=2.5?C.amber:C.coral}}>{s.gpa}</td>
                 <td style={{padding:"10px 15px"}}><Badge color={s.fees==="Paid"?"green":"red"} size="sm">{s.fees}</Badge></td>
-                <td style={{padding:"10px 15px"}}><div style={{display:"flex",gap:6}}><Btn onClick={()=>setSelected(s)} size="sm" variant="secondary">View</Btn><Btn onClick={()=>askDeleteOne(s)} size="sm" variant="danger">Delete</Btn></div></td>
+                <td style={{padding:"10px 15px"}}><div style={{display:"flex",gap:6}}><Btn onClick={()=>setSelected(s)} size="sm" variant="secondary">View</Btn><Btn onClick={()=>setEditStu(s)} size="sm" variant="secondary">Edit</Btn><Btn onClick={()=>askDeleteOne(s)} size="sm" variant="danger">Delete</Btn></div></td>
               </tr>
             ))}
           </tbody>
@@ -4497,6 +4528,62 @@ const AddStaffModal = ({ classes, subjects, onClose, onSaved }) => {
   );
 };
 
+// Edit a staff member's profile / account (incl. role + password). Assignments
+// (class-teacher / subject-teaching) are managed separately via AssignStaffModal.
+const EditStaffModal = ({ staff, onClose, onSaved }) => {
+  const empty = { first_name:"", last_name:"", email:"", phone:"", gender:"", role:"teacher",
+                  department:"", designation:"", qualification:"", hire_date:"", password:"" };
+  const [form,setForm]=useState(empty);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState(null);
+  const set=k=>v=>setForm(p=>({...p,[k]:v}));
+
+  useEffect(()=>{
+    let cancelled=false;
+    getStaffMember(staff.id).then(res=>{
+      if(cancelled) return;
+      const s=res?.data ?? res ?? {};
+      setForm(p=>({ ...p, first_name:s.first_name||"", last_name:s.last_name||"", email:s.email||"", phone:s.phone||"",
+        gender:s.gender||"", role:s.role||"teacher", department:s.department||"", designation:s.designation||"",
+        qualification:s.qualification||"", hire_date:(s.hire_date||"").slice(0,10), password:"" }));
+    }).catch(()=>{});
+    return ()=>{ cancelled=true; };
+  },[staff.id]);
+
+  const submit=async()=>{
+    if(!form.first_name.trim()||!form.last_name.trim()){ setError("First and last name are required."); return; }
+    if(!form.email.trim()){ setError("Email is required."); return; }
+    setSaving(true); setError(null);
+    try{
+      const payload={...form}; if(!payload.password) delete payload.password;
+      await updateStaff(staff.id, payload); onSaved();
+    }catch(err){ setError(err?.message || err?.data?.error || err?.data?.message || "Failed to update staff."); setSaving(false); }
+  };
+
+  return (
+    <Modal title={`Edit Staff · ${staff.name||""}`} onClose={saving?()=>{}:onClose} width={640}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <Input label="First Name"  value={form.first_name}  onChange={set("first_name")}  placeholder="e.g. Grace"/>
+        <Input label="Last Name"   value={form.last_name}   onChange={set("last_name")}   placeholder="e.g. Bello"/>
+        <Input label="Email"       value={form.email}       onChange={set("email")}       placeholder="teacher@school.edu" type="email"/>
+        <Input label="Phone"       value={form.phone}       onChange={set("phone")}       placeholder="+234 …"/>
+        <Sel   label="Gender"      value={form.gender}      onChange={set("gender")}      options={[{value:"",label:"Select…"},{value:"male",label:"Male"},{value:"female",label:"Female"}]}/>
+        <Sel   label="Role"        value={form.role}        onChange={set("role")}        options={[{value:"teacher",label:"Teacher"},{value:"accountant",label:"Accountant"},{value:"school_admin",label:"Admin / Principal"}]}/>
+        <Input label="Department"  value={form.department}  onChange={set("department")}  placeholder="e.g. Sciences"/>
+        <Input label="Designation" value={form.designation} onChange={set("designation")} placeholder="e.g. Senior Teacher"/>
+        <Input label="Qualification" value={form.qualification} onChange={set("qualification")} placeholder="e.g. B.Sc Ed" style={{gridColumn:"1 / -1"}}/>
+        <Input label="Hire Date"   value={form.hire_date}   onChange={set("hire_date")}   type="date"/>
+        <Input label="Password"    value={form.password}    onChange={set("password")}    type="password" placeholder="Leave blank to keep current"/>
+      </div>
+      {error && <div style={{marginTop:14,padding:"9px 12px",borderRadius:8,background:C.coralLight||"#FEE2E2",color:C.coral,fontSize:12,fontWeight:600}}>{error}</div>}
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Saving…":"Save Changes"}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
 const AssignStaffModal = ({ staff, classes, subjects, onClose, onSaved }) => {
   const [classTeacherOf,setClassTeacherOf]=useState(()=>new Set());
   const [teaching,setTeaching]=useState([]);
@@ -4553,6 +4640,7 @@ const Staff = () => {
   const [showAdd,setShowAdd]=useState(false);
   const [showImport,setShowImport]=useState(false);
   const [assignFor,setAssignFor]=useState(null);
+  const [editStaff,setEditStaff]=useState(null);   // staff being edited
   const [del,setDel]=useState(null);          // staff pending delete
   const [deleting,setDeleting]=useState(false);
   const [toast,setToast]=useState("");
@@ -4602,6 +4690,8 @@ const Staff = () => {
         onClose={()=>setShowImport(false)} onImported={()=>{ setShowImport(false); flash("Staff imported."); setReloadKey(k=>k+1); }}/>}
       {assignFor && <AssignStaffModal staff={assignFor} classes={classes} subjects={subjects}
         onClose={()=>setAssignFor(null)} onSaved={()=>{ setAssignFor(null); flash("Assignments saved."); }}/>}
+      {editStaff && <EditStaffModal staff={editStaff}
+        onClose={()=>setEditStaff(null)} onSaved={()=>{ setEditStaff(null); flash("Staff updated."); setReloadKey(k=>k+1); }}/>}
       {del && (
         <Modal title="Delete staff?" onClose={deleting?()=>{}:()=>setDel(null)} width={440}>
           <div style={{fontSize:13,color:C.textMid,lineHeight:1.6}}>
@@ -4630,6 +4720,7 @@ const Staff = () => {
                 <div style={{ fontSize:11, color:C.textMuted }}>{[s.designation,s.department].filter(Boolean).join(" · ")||s.staff_id}</div>
               </div>
               <div style={{display:"flex",gap:6,flexShrink:0}}>
+                <Btn size="sm" variant="secondary" onClick={()=>setEditStaff(s)}>Edit</Btn>
                 <Btn size="sm" variant="secondary" onClick={()=>setAssignFor(s)}>Assign</Btn>
                 <Btn size="sm" variant="danger" onClick={()=>setDel(s)}>Delete</Btn>
               </div>
