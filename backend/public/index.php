@@ -105,7 +105,7 @@ try {
         DashboardController::index(authGuard());
 
     // ── Students ──────────────────────────────────────────────────────────────
-    } elseif ($path === '/api/v1/students' && $method === 'GET') {
+    } elseif ($path === '/api/v1/students' && !$id && $method === 'GET') {
         StudentController::index(authGuard());
 
     } elseif ($path === '/api/v1/students/import' && $method === 'POST') {
@@ -127,7 +127,7 @@ try {
         StudentController::destroy(authGuard(), $id);
 
     // ── Staff ─────────────────────────────────────────────────────────────────
-    } elseif ($path === '/api/v1/staff' && $method === 'GET') {
+    } elseif ($path === '/api/v1/staff' && !$id && $method === 'GET') {
         StaffController::index(authGuard());
 
     } elseif ($path === '/api/v1/staff/import' && $method === 'POST') {

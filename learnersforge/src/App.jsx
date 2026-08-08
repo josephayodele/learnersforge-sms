@@ -4531,9 +4531,13 @@ const AddStaffModal = ({ classes, subjects, onClose, onSaved }) => {
 // Edit a staff member's profile / account (incl. role + password). Assignments
 // (class-teacher / subject-teaching) are managed separately via AssignStaffModal.
 const EditStaffModal = ({ staff, onClose, onSaved }) => {
-  const empty = { first_name:"", last_name:"", email:"", phone:"", gender:"", role:"teacher",
-                  department:"", designation:"", qualification:"", hire_date:"", password:"" };
-  const [form,setForm]=useState(empty);
+  // Prefill immediately from the row already loaded in the list, then enrich
+  // from the API (e.g. role, qualification) once it resolves.
+  const fromRow = (s = {}) => ({
+    first_name:s.first_name||"", last_name:s.last_name||"", email:s.email||"", phone:s.phone||"",
+    gender:s.gender||"", role:s.role||"teacher", department:s.department||"", designation:s.designation||"",
+    qualification:s.qualification||"", hire_date:(s.hire_date||"").slice(0,10), password:"" });
+  const [form,setForm]=useState(()=>fromRow(staff));
   const [saving,setSaving]=useState(false);
   const [error,setError]=useState(null);
   const set=k=>v=>setForm(p=>({...p,[k]:v}));
@@ -4543,9 +4547,13 @@ const EditStaffModal = ({ staff, onClose, onSaved }) => {
     getStaffMember(staff.id).then(res=>{
       if(cancelled) return;
       const s=res?.data ?? res ?? {};
-      setForm(p=>({ ...p, first_name:s.first_name||"", last_name:s.last_name||"", email:s.email||"", phone:s.phone||"",
-        gender:s.gender||"", role:s.role||"teacher", department:s.department||"", designation:s.designation||"",
-        qualification:s.qualification||"", hire_date:(s.hire_date||"").slice(0,10), password:"" }));
+      if(!s || typeof s!=="object") return;
+      // Only overwrite a field when the API actually has a value for it.
+      setForm(p=>({ ...p,
+        first_name:s.first_name??p.first_name, last_name:s.last_name??p.last_name, email:s.email??p.email,
+        phone:s.phone??p.phone, gender:s.gender??p.gender, role:s.role||p.role,
+        department:s.department??p.department, designation:s.designation??p.designation,
+        qualification:s.qualification??p.qualification, hire_date:(s.hire_date||p.hire_date||"").slice(0,10) }));
     }).catch(()=>{});
     return ()=>{ cancelled=true; };
   },[staff.id]);
