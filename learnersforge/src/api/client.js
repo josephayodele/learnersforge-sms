@@ -45,6 +45,8 @@ export const login  = (email, password) =>
   });
 export const logout = () => { localStorage.removeItem('lf_token'); };
 export const getMe  = () => api.get('/auth/me');
+// The logged-in user's teaching scope (is_admin, class_ids, teaching pairs, …).
+export const getMyAssignments = () => api.get('/me/assignments');
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 export const getDashboard = () => api.get('/dashboard');

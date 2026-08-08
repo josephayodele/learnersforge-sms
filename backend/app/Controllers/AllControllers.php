@@ -57,6 +57,14 @@ class StudentController {
         if ($classId) { $where[] = 's.class_id = ?'; $params[] = $classId; }
         elseif ($form !== '') { $where[] = 'c.name LIKE ?'; $params[] = $form . '%'; }
 
+        // Non-admin staff only ever see students in the classes they're assigned to.
+        if (!Perm::isAdmin($user)) {
+            $cids = Perm::teacherClassIds($user);
+            if (!$cids) { respond(['students' => [], 'meta' => ['total' => 0, 'page' => 1, 'per_page' => $limit, 'pages' => 1]]); }
+            $where[] = 's.class_id IN (' . implode(',', array_fill(0, count($cids), '?')) . ')';
+            $params = array_merge($params, $cids);
+        }
+
         // Sortable columns (whitelisted to prevent SQL injection).
         $dir = strtolower($_GET['dir'] ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
         switch ($_GET['sort'] ?? 'name') {
@@ -86,12 +94,14 @@ class StudentController {
     public static function show(array $user, int $id): void {
         $s = DB::one('SELECT s.*,u.first_name,u.last_name,u.email,u.phone,u.gender,u.date_of_birth,u.address,c.name AS class_name FROM students s JOIN users u ON u.id=s.user_id JOIN classes c ON c.id=s.class_id WHERE s.id=? AND u.school_id=?',[$id,(int)$user['school_id']]);
         if (!$s) respond(null,404,'Student not found');
+        if (!Perm::canAccessClass($user, (int)$s['class_id'])) respond(null, 403, 'You are not assigned to this student\'s class.');
         $s['attendance_summary'] = DB::one('SELECT COUNT(*) total, SUM(status="present") present, SUM(status LIKE "absent%") absent, SUM(status LIKE "late%") late FROM attendance WHERE student_id=?',[$id]);
         $s['invoice'] = DB::one('SELECT * FROM invoices WHERE student_id=? ORDER BY id DESC LIMIT 1',[$id]);
         respond($s);
     }
 
     public static function store(array $user): void {
+        Perm::assertAdmin($user);   // enrolment is an admin action
         $b = body();
         // Blank optional fields must become NULL — an empty string is rejected by the
         // gender ENUM and date_of_birth DATE columns under MySQL strict mode.
@@ -130,6 +140,7 @@ class StudentController {
     // Bulk import: all rows are enrolled into the single class chosen in the form.
     // Each row is its own transaction so one bad row never aborts the whole batch.
     public static function import(array $user): void {
+        Perm::assertAdmin($user);
         $b        = body();
         $classId  = (int)($b['class_id'] ?? 0);
         $students = $b['students'] ?? [];
@@ -210,6 +221,7 @@ class StudentController {
         $b = body();
         $s = DB::one('SELECT s.*,u.id AS uid FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=?',[$id,(int)$user['school_id']]);
         if (!$s) respond(null,404,'Student not found');
+        if (!Perm::canAccessClass($user, (int)$s['class_id'])) respond(null, 403, 'You are not assigned to this student\'s class.');
         $uid = (int)$s['uid'];
         $nn  = fn($k) => (isset($b[$k]) && trim((string)$b[$k]) !== '') ? trim((string)$b[$k]) : null;
 
@@ -248,6 +260,7 @@ class StudentController {
     }
 
     public static function destroy(array $user, int $id): void {
+        Perm::assertAdmin($user);
         $s = DB::one('SELECT s.*,u.id AS uid FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=?',[$id,(int)$user['school_id']]);
         if (!$s) respond(null,404,'Student not found');
         DB::run('UPDATE students SET deleted_at=NOW() WHERE id=?',[$id]);
@@ -257,6 +270,7 @@ class StudentController {
 
     // Soft-delete many students at once (only those in the caller's school).
     public static function bulkDestroy(array $user): void {
+        Perm::assertAdmin($user);
         $ids = array_values(array_unique(array_filter(array_map('intval', body()['ids'] ?? []))));
         if (!$ids) respond(null, 422, 'No student ids provided');
         $sid = (int)$user['school_id'];
@@ -283,6 +297,7 @@ class StudentController {
 // ─── StaffController ──────────────────────────────────────────────────────────
 class StaffController {
     public static function index(array $user): void {
+        Perm::assertAdmin($user);
         $sid = (int)$user['school_id'];
         respond(DB::query('SELECT s.*,u.first_name,u.last_name,u.email,u.phone,u.gender,u.is_active FROM staff s JOIN users u ON u.id=s.user_id WHERE u.school_id=? AND u.deleted_at IS NULL ORDER BY u.last_name',[$sid]));
     }
@@ -424,6 +439,25 @@ class StaffController {
             }
         }
         respond(['created'=>$created, 'failed'=>$failed, 'errors'=>$errors], 201, "Imported $created staff, $failed failed");
+    }
+
+    // The logged-in user's own teaching scope — drives the teacher UI (menu,
+    // class/subject dropdowns). Admins get is_admin=true and no restriction.
+    public static function myAssignments(array $user): void {
+        $isAdmin = Perm::isAdmin($user);
+        $sid = (int)$user['school_id']; $uid = (int)$user['id'];
+        $classTeacherOf = array_map('intval', array_column(
+            DB::query('SELECT id FROM classes WHERE school_id=? AND form_teacher_id=? AND deleted_at IS NULL', [$sid, $uid]), 'id'));
+        $teaching = array_map(fn($r) => ['class_id' => (int)$r['class_id'], 'subject_id' => (int)$r['subject_id']],
+            DB::query('SELECT cs.class_id, cs.subject_id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE c.school_id=? AND cs.teacher_id=?', [$sid, $uid]));
+        respond([
+            'is_admin'         => $isAdmin,
+            'role'             => $user['role'] ?? null,
+            'class_ids'        => $isAdmin ? [] : Perm::teacherClassIds($user),
+            'class_teacher_of' => $classTeacherOf,
+            'subject_ids'      => array_values(array_unique(array_map(fn($t) => $t['subject_id'], $teaching))),
+            'teaching'         => $teaching,
+        ]);
     }
 
     // Current teaching / class-teacher assignments for a staff member.
@@ -1022,6 +1056,34 @@ class Perm {
             respond(null, 403, 'You are not assigned to teach this subject in this student\'s class.');
         }
     }
+
+    // Every class a non-admin staff member is attached to — as its form teacher
+    // OR as a subject teacher. Used to scope what students/classes they can access.
+    public static function teacherClassIds(array $user): array {
+        $uid = (int)$user['id']; $sid = (int)$user['school_id'];
+        $a = DB::query('SELECT id FROM classes WHERE school_id=? AND form_teacher_id=? AND deleted_at IS NULL', [$sid, $uid]);
+        $b = DB::query('SELECT DISTINCT cs.class_id AS id FROM class_subjects cs JOIN classes c ON c.id=cs.class_id WHERE c.school_id=? AND cs.teacher_id=?', [$sid, $uid]);
+        return array_values(array_unique(array_map(fn($r) => (int)$r['id'], array_merge($a, $b))));
+    }
+
+    // Can this user view/manage students in $classId? (admin, or attached to it)
+    public static function canAccessClass(array $user, ?int $classId): bool {
+        if (self::isAdmin($user)) return true;
+        if (!$classId) return false;
+        return in_array((int)$classId, self::teacherClassIds($user), true);
+    }
+
+    public static function assertAccessStudent(array $user, int $studentId): void {
+        if (self::isAdmin($user)) return;
+        $s = DB::one('SELECT class_id FROM students WHERE id=?', [$studentId]);
+        if (!$s || !self::canAccessClass($user, (int)$s['class_id'])) {
+            respond(null, 403, 'You are not assigned to this student\'s class.');
+        }
+    }
+
+    public static function assertAdmin(array $user): void {
+        if (!self::isAdmin($user)) respond(null, 403, 'Only an administrator can perform this action.');
+    }
 }
 
 // ─── RemarkController ─────────────────────────────────────────────────────────
@@ -1191,6 +1253,10 @@ class ExamController {
 
     public static function store(array $user): void {
         $b = body();
+        // A teacher may only create an exam for a subject they teach in that class.
+        if (!Perm::isAdmin($user) && !Perm::teachesSubjectInClass($user, (int)($b['class_id'] ?? 0), (int)($b['subject_id'] ?? 0))) {
+            respond(null, 403, 'You can only create exams for subjects you teach in your assigned classes.');
+        }
         $id = DB::exec('INSERT INTO exams (school_id,class_id,subject_id,term_id,title,exam_type,duration,total_marks,pass_mark,status,shuffle_q,shuffle_opts,show_score,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             [(int)$user['school_id'],(int)$b['class_id'],(int)$b['subject_id'],(int)$b['term_id'],$b['title'],$b['exam_type']??'mid-term',(int)($b['duration']??60),(int)($b['total_marks']??100),(int)($b['pass_mark']??50),$b['status']??'draft',(int)($b['shuffle_q']??1),(int)($b['shuffle_opts']??1),(int)($b['show_score']??0),(int)$user['id']]);
         if (!empty($b['questions'])) {

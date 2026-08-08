@@ -5,7 +5,7 @@ import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getC
          createSubject, deleteSubject,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
-         getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe,
+         getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe, getMyAssignments,
          getStaff, createStaff, updateStaff, getStaffMember, importStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
          getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
@@ -240,8 +240,9 @@ const useIsMobile = (bp = 768) => {
   return m;
 };
 
-const Sidebar = ({active,onNav,collapsed,setCollapsed,school,isMobile,mobileOpen,onClose}) => {
-  const groups=[...new Set(NAV.map(n=>n.group))];
+const Sidebar = ({active,onNav,collapsed,setCollapsed,school,isMobile,mobileOpen,onClose,allowed}) => {
+  const nav = allowed ? NAV.filter(n=>allowed.has(n.id)) : NAV;
+  const groups=[...new Set(nav.map(n=>n.group))];
   const collapsedUI = !isMobile && collapsed;   // drawer always shows full labels
   const asideStyle = isMobile
     ? {width:C.sidebarW,background:C.navy,display:"flex",flexDirection:"column",position:"fixed",top:0,left:0,height:"100vh",zIndex:1200,overflowY:"auto",overflowX:"hidden",transform:mobileOpen?"translateX(0)":"translateX(-100%)",transition:"transform .25s",boxShadow:mobileOpen?"0 0 40px rgba(0,0,0,.45)":"none"}
@@ -259,7 +260,7 @@ const Sidebar = ({active,onNav,collapsed,setCollapsed,school,isMobile,mobileOpen
       </div>
       <nav style={{flex:1,padding:"10px 8px"}}>
         {groups.map(g=>{
-          const items=NAV.filter(n=>n.group===g);
+          const items=nav.filter(n=>n.group===g);
           return (
             <div key={g} style={{marginBottom:18}}>
               {!collapsedUI&&<div style={{fontSize:9,fontWeight:700,color:"#4B6080",letterSpacing:"1.2px",textTransform:"uppercase",padding:"0 8px 6px"}}>{GROUPS[g]}</div>}
@@ -962,6 +963,8 @@ const Students = () => {
   const [showAdd,setShowAdd]=useState(false);
   const [editStu,setEditStu]=useState(null);    // student being edited
   const [showImport,setShowImport]=useState(false);
+  const [isAdminUser,setIsAdminUser]=useState(true);   // gates add/import/delete (teachers can only edit)
+  useEffect(()=>{ getMyAssignments().then(r=>{ const d=r?.data??r; setIsAdminUser(!!d?.is_admin); }).catch(()=>{}); },[]);
   const [sel,setSel]=useState(()=>new Set());   // selected student ids (for bulk delete)
   const [del,setDel]=useState(null);            // pending delete confirmation { ids:[], label }
   const [deleting,setDeleting]=useState(false);
@@ -1093,7 +1096,7 @@ const Students = () => {
     <div className="fi">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <Input value={searchInput} onChange={setSearchInput} placeholder="🔍 Search name or ID…" style={{width:250}}/>
-        <div style={{display:"flex",gap:8}}><Btn variant="secondary" onClick={()=>setShowImport(true)}>📥 Import Students</Btn><Btn variant="primary" onClick={()=>setShowAdd(true)}>+ Add Student</Btn></div>
+        {isAdminUser && <div style={{display:"flex",gap:8}}><Btn variant="secondary" onClick={()=>setShowImport(true)}>📥 Import Students</Btn><Btn variant="primary" onClick={()=>setShowAdd(true)}>+ Add Student</Btn></div>}
       </div>
       <div style={{display:"flex",gap:10,alignItems:"flex-end",flexWrap:"wrap",marginBottom:16}}>
         <Sel label="Class" value={classForm} onChange={v=>{ setClassForm(v); setArm(""); setPage(1); }}
@@ -1162,7 +1165,7 @@ const Students = () => {
         <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
           <thead><tr style={{borderBottom:`1px solid ${C.border}`,background:"#F8FAFC"}}>
-            <th style={{padding:"10px 15px",width:34}}><input type="checkbox" checked={allOnPage} onChange={toggleAll} title="Select all on this page" style={{width:15,height:15,cursor:"pointer"}}/></th>
+            <th style={{padding:"10px 15px",width:34}}>{isAdminUser && <input type="checkbox" checked={allOnPage} onChange={toggleAll} title="Select all on this page" style={{width:15,height:15,cursor:"pointer"}}/>}</th>
             {[["Student","name"],["ID","id"],["Class","class"],["GPA",null],["Fees",null],["Action",null]].map(([h,col])=>(
               <th key={h} onClick={col?()=>toggleSort(col):undefined}
                   style={{padding:"10px 15px",textAlign:"left",fontSize:10,fontWeight:700,color:col&&sort===col?C.accentDark:C.textMuted,textTransform:"uppercase",letterSpacing:".5px",cursor:col?"pointer":"default",userSelect:"none",whiteSpace:"nowrap"}}
@@ -1174,13 +1177,13 @@ const Students = () => {
               <tr><td colSpan={7} style={{padding:"36px 15px",textAlign:"center",fontSize:12,color:C.textMuted}}>{hasFilters?"No students match these filters.":"No students yet."}</td></tr>
             ) : students.map((s,i)=>(
               <tr key={s.id} style={{borderBottom:`1px solid ${C.border}`,transition:"background .1s",background:sel.has(s.id)?C.accentLight:"transparent"}} onMouseEnter={e=>{if(!sel.has(s.id))e.currentTarget.style.background="#F8FAFC"}} onMouseLeave={e=>{e.currentTarget.style.background=sel.has(s.id)?C.accentLight:"transparent"}}>
-                <td style={{padding:"10px 15px"}}><input type="checkbox" checked={sel.has(s.id)} onChange={()=>toggle(s.id)} style={{width:15,height:15,cursor:"pointer"}}/></td>
+                <td style={{padding:"10px 15px"}}>{isAdminUser && <input type="checkbox" checked={sel.has(s.id)} onChange={()=>toggle(s.id)} style={{width:15,height:15,cursor:"pointer"}}/>}</td>
                 <td style={{padding:"10px 15px"}}><div style={{display:"flex",alignItems:"center",gap:9}}><Avatar initials={s.avatar} size={28} color={[C.accent,C.sky,C.purple,C.amber,C.coral][i%5]}/><span style={{fontSize:12,fontWeight:600}}>{s.name}</span></div></td>
                 <td style={{padding:"10px 15px",fontSize:11,color:C.textMuted,fontFamily:"monospace"}}>{s.student_id||s.id}</td>
                 <td style={{padding:"10px 15px",fontSize:12}}>{s.class}</td>
                 <td style={{padding:"10px 15px",fontSize:13,fontWeight:700,color:s.gpa>=3.5?C.accentDark:s.gpa>=2.5?C.amber:C.coral}}>{s.gpa}</td>
                 <td style={{padding:"10px 15px"}}><Badge color={s.fees==="Paid"?"green":"red"} size="sm">{s.fees}</Badge></td>
-                <td style={{padding:"10px 15px"}}><div style={{display:"flex",gap:6}}><Btn onClick={()=>setSelected(s)} size="sm" variant="secondary">View</Btn><Btn onClick={()=>setEditStu(s)} size="sm" variant="secondary">Edit</Btn><Btn onClick={()=>askDeleteOne(s)} size="sm" variant="danger">Delete</Btn></div></td>
+                <td style={{padding:"10px 15px"}}><div style={{display:"flex",gap:6}}><Btn onClick={()=>setSelected(s)} size="sm" variant="secondary">View</Btn><Btn onClick={()=>setEditStu(s)} size="sm" variant="secondary">Edit</Btn>{isAdminUser && <Btn onClick={()=>askDeleteOne(s)} size="sm" variant="danger">Delete</Btn>}</div></td>
               </tr>
             ))}
           </tbody>
@@ -1800,6 +1803,10 @@ const REMARK_TYPES = [
   { key:"head_teacher",  label:"🎓 Head Teacher's Remark" },
 ];
 const ADMIN_ROLES = ["super_admin", "school_admin"];
+// Pages a non-admin staff member (teacher) may reach. Everything else — Dashboard,
+// Staff, Fees, HR, Settings, Analytics, etc. — is admin-only.
+const TEACHER_PAGES = new Set(["students","attendance","grades","timetable","cbt","cbt-create","cbt-take","cbt-results","ai-tools"]);
+const TEACHER_HOME = "students";
 // Recommended school-wide bands (high→low). Shown as placeholder guidance in the
 // school-wide remark inputs and offered via "Load recommended defaults".
 const RECOMMENDED_BANDS = {
@@ -2127,9 +2134,20 @@ const Grades = () => {
 
   const flash = msg => { setToast(msg); setTimeout(() => setToast(""), 2800); };
 
+  const [myAssign, setMyAssign] = useState(null);   // teacher scope (null until loaded)
+  const notAdmin = !!myAssign && !myAssign.is_admin;
+  const allowedClassIds = notAdmin ? new Set((myAssign.class_ids||[]).map(Number)) : null;
+  const classOptsScoped = (allowedClassIds ? classList.filter(c=>allowedClassIds.has(Number(c.id))) : classList).map(c=>({value:String(c.id),label:c.name}));
+  const subjOptsFor = cid => {
+    if (!notAdmin) return subjectList.map(s=>({value:String(s.id),label:s.name}));
+    const ids = new Set((myAssign.teaching||[]).filter(t=>String(t.class_id)===String(cid)).map(t=>Number(t.subject_id)));
+    return subjectList.filter(s=>ids.has(Number(s.id))).map(s=>({value:String(s.id),label:s.name}));
+  };
+
   // Load reference data once.
   useEffect(() => {
     let cancelled = false;
+    getMyAssignments().then(res => { if (!cancelled) setMyAssign(res?.data ?? res ?? null); }).catch(() => {});
     getStudents({ per_page: 100 }).then(res => {
       if (cancelled) return;
       const norm = arrOf(res, "students").map(normStudent);
@@ -2148,6 +2166,20 @@ const Grades = () => {
     getCaTypes().then(res => { if (!cancelled) setCaRows(arrOf(res)); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  // Keep a teacher's class/subject selection within what they're assigned to.
+  useEffect(() => {
+    if (!notAdmin) return;
+    const allowed = classOptsScoped.map(o => o.value);
+    if (allowed.length && !allowed.includes(String(entClass))) setEntClass(allowed[0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myAssign, classList]);
+  useEffect(() => {
+    if (!notAdmin) return;
+    const subs = subjOptsFor(entClass).map(o => o.value);
+    if (!subs.includes(String(entSubject))) setEntSubject(subs[0] || "");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myAssign, subjectList, entClass]);
 
   // Class roster when the class changes.
   useEffect(() => {
@@ -2365,8 +2397,8 @@ const Grades = () => {
       {tab==="scores" && (
         <div>
           <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
-            <Sel label="Class"   value={entClass}   onChange={setEntClass}   options={classList.map(c=>({value:String(c.id),label:c.name}))}   style={{ width:160 }}/>
-            <Sel label="Subject" value={entSubject} onChange={setEntSubject} options={subjectList.map(s=>({value:String(s.id),label:s.name}))} style={{ width:200 }}/>
+            <Sel label="Class"   value={entClass}   onChange={setEntClass}   options={classOptsScoped}   style={{ width:160 }}/>
+            <Sel label="Subject" value={entSubject} onChange={setEntSubject} options={subjOptsFor(entClass)} style={{ width:200 }}/>
             <Sel label="Term"    value={entTerm}    onChange={setEntTerm}    options={termList.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:170 }}/>
           </div>
           <Card style={{ padding:0, overflowX:"auto" }}>
@@ -2445,7 +2477,7 @@ const Grades = () => {
       {tab==="psychomotor" && (
         <div>
           <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
-            <Sel label="Class" value={entClass} onChange={setEntClass} options={classList.map(c=>({value:String(c.id),label:c.name}))} style={{ width:160 }}/>
+            <Sel label="Class" value={entClass} onChange={setEntClass} options={classOptsScoped} style={{ width:160 }}/>
             <Sel label="Term"  value={entTerm}  onChange={setEntTerm}  options={termList.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:170 }}/>
           </div>
           <Card style={{ padding:0, overflowX:"auto" }}>
@@ -2479,7 +2511,7 @@ const Grades = () => {
       {tab==="affective" && (
         <div>
           <div style={{ display:"flex", gap:10, marginBottom:14, flexWrap:"wrap" }}>
-            <Sel label="Class" value={entClass} onChange={setEntClass} options={classList.map(c=>({value:String(c.id),label:c.name}))} style={{ width:160 }}/>
+            <Sel label="Class" value={entClass} onChange={setEntClass} options={classOptsScoped} style={{ width:160 }}/>
             <Sel label="Term"  value={entTerm}  onChange={setEntTerm}  options={termList.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:170 }}/>
           </div>
           <Card style={{ padding:0, overflowX:"auto" }}>
@@ -6771,7 +6803,11 @@ export default function App() {
   // always starts on the picker; openExam sets it directly and bypasses this.
   const isMobile = useIsMobile();
   const [mobileNav, setMobileNav] = useState(false);
-  const go = p => { setExamId(null); setPage(p); };
+  // Restricted = known non-admin staff (teacher/accountant). Students/parents are
+  // routed to the portal earlier, so they never reach here.
+  const restricted = !!me && !ADMIN_ROLES.includes(me.role);
+  const allow = p => !restricted || TEACHER_PAGES.has(p);
+  const go = p => { setExamId(null); setPage(allow(p) ? p : TEACHER_HOME); };
   const handleNav = p => { setMobileNav(false); go(p); };   // sidebar/topbar nav also closes the mobile drawer
   const openExam = id => { setExamId(id); setPage("cbt-take"); };
   const openResults = id => { setExamId(id); setPage("cbt-results"); };
@@ -6852,17 +6888,23 @@ export default function App() {
   return (
     <>
       <style>{G}</style>
+      {(() => {
+        const activePage = allow(page) ? page : TEACHER_HOME;   // never render a page the role can't see
+        return (
       <div style={{ display:"flex", minHeight:"100vh" }}>
-        <Sidebar active={page} onNav={handleNav} collapsed={collapsed} setCollapsed={setCollapsed} school={school}
-                 isMobile={isMobile} mobileOpen={mobileNav} onClose={()=>setMobileNav(false)}/>
+        <Sidebar active={activePage} onNav={handleNav} collapsed={collapsed} setCollapsed={setCollapsed} school={school}
+                 isMobile={isMobile} mobileOpen={mobileNav} onClose={()=>setMobileNav(false)}
+                 allowed={restricted ? TEACHER_PAGES : null}/>
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
-          <Topbar page={page} onNav={handleNav} onLogout={handleLogout} school={school}
+          <Topbar page={activePage} onNav={handleNav} onLogout={handleLogout} school={school}
                   isMobile={isMobile} onMenu={()=>setMobileNav(true)}/>
           <main style={{ flex:1, padding:isMobile?"14px 12px":22, overflowY:"auto" }}>
-            {PAGES[page] || <Dashboard onNav={go}/>}
+            {PAGES[activePage] || (restricted ? <Students/> : <Dashboard onNav={go}/>)}
           </main>
         </div>
       </div>
+        );
+      })()}
     </>
   );
 }
