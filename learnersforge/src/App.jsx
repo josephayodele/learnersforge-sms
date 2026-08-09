@@ -2401,18 +2401,18 @@ const Grades = () => {
             <Sel label="Subject" value={entSubject} onChange={setEntSubject} options={subjOptsFor(entClass)} style={{ width:200 }}/>
             <Sel label="Term"    value={entTerm}    onChange={setEntTerm}    options={termList.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:170 }}/>
           </div>
-          <Card style={{ padding:0, overflowX:"auto" }}>
+          <Card style={{ padding:0, overflow:"auto", maxHeight:"72vh" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", minWidth:680 }}>
               <thead>
-                <tr style={{ background:"#F8FAFC", borderBottom:`1px solid ${C.border}` }}>
-                  <th style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>Student</th>
+                <tr style={{ borderBottom:`1px solid ${C.border}` }}>
+                  <th style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", position:"sticky", top:0, left:0, zIndex:3, background:"#F1F5F9" }}>Student</th>
                   {caRows.map(c => (
-                    <th key={c.id} style={{ padding:"10px 9px", textAlign:"center", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>
+                    <th key={c.id} style={{ padding:"10px 9px", textAlign:"center", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", position:"sticky", top:0, zIndex:2, background:"#F1F5F9" }}>
                       {c.label}<br/><span style={{ fontWeight:400, fontSize:9 }}>/{c.max_score}</span>
                     </th>
                   ))}
-                  <th style={{ padding:"10px 9px", textAlign:"center", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>Total<br/><span style={{ fontWeight:400, fontSize:9 }}>/{caTotalMax}</span></th>
-                  <th style={{ padding:"10px 9px", textAlign:"center", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>Grade</th>
+                  <th style={{ padding:"10px 9px", textAlign:"center", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", position:"sticky", top:0, zIndex:2, background:"#F1F5F9" }}>Total<br/><span style={{ fontWeight:400, fontSize:9 }}>/{caTotalMax}</span></th>
+                  <th style={{ padding:"10px 9px", textAlign:"center", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", position:"sticky", top:0, zIndex:2, background:"#F1F5F9" }}>Grade</th>
                 </tr>
               </thead>
               <tbody>
@@ -2480,12 +2480,12 @@ const Grades = () => {
             <Sel label="Class" value={entClass} onChange={setEntClass} options={classOptsScoped} style={{ width:160 }}/>
             <Sel label="Term"  value={entTerm}  onChange={setEntTerm}  options={termList.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:170 }}/>
           </div>
-          <Card style={{ padding:0, overflowX:"auto" }}>
+          <Card style={{ padding:0, overflow:"auto", maxHeight:"72vh" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", minWidth:820 }}>
               <thead>
-                <tr style={{ background:"#F8FAFC", borderBottom:`1px solid ${C.border}` }}>
-                  <th style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", minWidth:160 }}>Student</th>
-                  {PSYCHOMOTOR.map(t => <th key={t} style={{ padding:"10px 8px", textAlign:"center", fontSize:9, fontWeight:700, color:C.textMuted, textTransform:"uppercase", maxWidth:88 }}>{t}</th>)}
+                <tr style={{ borderBottom:`1px solid ${C.border}` }}>
+                  <th style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", minWidth:160, position:"sticky", top:0, left:0, zIndex:3, background:"#F1F5F9" }}>Student</th>
+                  {PSYCHOMOTOR.map(t => <th key={t} style={{ padding:"10px 8px", textAlign:"center", fontSize:9, fontWeight:700, color:C.textMuted, textTransform:"uppercase", maxWidth:88, position:"sticky", top:0, zIndex:2, background:"#F1F5F9" }}>{t}</th>)}
                 </tr>
               </thead>
               <tbody>
@@ -2514,12 +2514,12 @@ const Grades = () => {
             <Sel label="Class" value={entClass} onChange={setEntClass} options={classOptsScoped} style={{ width:160 }}/>
             <Sel label="Term"  value={entTerm}  onChange={setEntTerm}  options={termList.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:170 }}/>
           </div>
-          <Card style={{ padding:0, overflowX:"auto" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse" }}>
+          <Card style={{ padding:0, overflow:"auto", maxHeight:"72vh" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", minWidth:760 }}>
               <thead>
-                <tr style={{ background:"#F8FAFC", borderBottom:`1px solid ${C.border}` }}>
-                  <th style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", minWidth:160 }}>Student</th>
-                  {AFFECTIVE.map(t => <th key={t} style={{ padding:"10px 8px", textAlign:"center", fontSize:9, fontWeight:700, color:C.textMuted, textTransform:"uppercase", maxWidth:90 }}>{t}</th>)}
+                <tr style={{ borderBottom:`1px solid ${C.border}` }}>
+                  <th style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", minWidth:160, position:"sticky", top:0, left:0, zIndex:3, background:"#F1F5F9" }}>Student</th>
+                  {AFFECTIVE.map(t => <th key={t} style={{ padding:"10px 8px", textAlign:"center", fontSize:9, fontWeight:700, color:C.textMuted, textTransform:"uppercase", maxWidth:90, position:"sticky", top:0, zIndex:2, background:"#F1F5F9" }}>{t}</th>)}
                 </tr>
               </thead>
               <tbody>
