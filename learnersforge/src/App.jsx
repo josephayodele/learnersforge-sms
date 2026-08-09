@@ -1625,11 +1625,14 @@ const ReportSheet = ({ rc }) => {
   );
 };
 
+// Rating scale 5 (Excellent) → 1 (Poor). Values stored are the numbers.
 const TraitSel = ({ value, onChange }) => (
   <select value={value||""} onChange={e => onChange(e.target.value)}
-    style={{ padding:"3px 6px", borderRadius:6, border:`1px solid ${C.border}`, fontSize:11, outline:"none", background:C.surface }}>
-    <option value="">—</option>
-    {["Excellent","Very Good","Good","Fair","Poor"].map(r => <option key={r} value={r}>{r}</option>)}
+    style={{ padding:"6px 10px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, fontWeight:600,
+             outline:"none", background:C.surface, color:C.text, cursor:"pointer", minWidth:56, textAlign:"center",
+             fontFamily:"Sora,sans-serif" }}>
+    <option value="" style={{ color:C.text, background:"#fff" }}>—</option>
+    {[5,4,3,2,1].map(r => <option key={r} value={r} style={{ color:C.text, background:"#fff" }}>{r}</option>)}
   </select>
 );
 

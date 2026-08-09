@@ -864,7 +864,8 @@ class GradeController {
         $classSize = (int)(DB::one('SELECT COUNT(*) c FROM students WHERE class_id=? AND deleted_at IS NULL',[$classId])['c'] ?? 0);
 
         // Behavioural records (affective + psychomotor), with a numeric /5 score.
-        $ratingScore = ['Excellent'=>5,'Very Good'=>4,'Good'=>3,'Fair'=>2,'Poor'=>1];
+        // Accept the numeric 5–1 scale, and legacy text ratings from older data.
+        $ratingScore = ['Excellent'=>5,'Very Good'=>4,'Good'=>3,'Fair'=>2,'Poor'=>1,'5'=>5,'4'=>4,'3'=>3,'2'=>2,'1'=>1];
         $brows = DB::query('SELECT trait,rating,domain FROM psychomotor WHERE student_id=? AND term_id=? ORDER BY domain,trait',[$studentId,$termId]);
         $behaviour = array_map(fn($b) => [
             'trait'  => $b['trait'],
