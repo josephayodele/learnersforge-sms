@@ -2955,16 +2955,42 @@ const CBTCreate = ({ onNav }) => {
   const [termList,     setTermList]     = useState([]);
   const [saving,       setSaving]       = useState(false);
   const [toast,        setToast]        = useState("");
+  const [myAssign,     setMyAssign]     = useState(null);   // teacher scope
 
   const flash = msg => { setToast(msg); setTimeout(() => setToast(""), 2800); };
 
+  // A teacher may only create exams for subjects they teach in their classes.
+  const notAdmin = !!myAssign && !myAssign.is_admin;
+  const allowedClassIds = notAdmin ? new Set((myAssign.class_ids||[]).map(Number)) : null;
+  const classesScoped = allowedClassIds ? classList.filter(c => allowedClassIds.has(Number(c.id))) : classList;
+  const subjectsFor = cid => {
+    if (!notAdmin) return subjectList;
+    const ids = new Set((myAssign.teaching||[]).filter(t => String(t.class_id) === String(cid)).map(t => Number(t.subject_id)));
+    return subjectList.filter(s => ids.has(Number(s.id)));
+  };
+
   useEffect(() => {
     let cancelled = false;
+    getMyAssignments().then(res => { if (!cancelled) setMyAssign(res?.data ?? res ?? null); }).catch(() => {});
     getClasses().then(res => { if (!cancelled) setClassList(arrOf(res)); }).catch(() => {});
     getSubjects().then(res => { if (!cancelled) setSubjectList(arrOf(res)); }).catch(() => {});
     getTerms().then(res => { if (!cancelled) { const l = arrOf(res); setTermList(l); if (l.length) setTermId(String(l[l.length-1].id)); } }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  // Keep a teacher's class/subject selection within what they're assigned to.
+  useEffect(() => {
+    if (!notAdmin) return;
+    const allowed = classesScoped.map(c => String(c.id));
+    if (allowed.length && !allowed.includes(String(classId))) setClassId(allowed[0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myAssign, classList]);
+  useEffect(() => {
+    if (!notAdmin) return;
+    const subs = subjectsFor(classId).map(s => String(s.id));
+    if (!subs.includes(String(subjectId))) setSubjectId(subs[0] || "");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myAssign, subjectList, classId]);
 
   const totalMarks = questions.reduce((a,q) => a + (Number(q.marks)||0), 0);
 
@@ -3014,8 +3040,8 @@ const CBTCreate = ({ onNav }) => {
               <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
                 <Input label="Exam Title" value={title} onChange={setTitle} placeholder="e.g. Mathematics Mid-Term Exam"/>
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:11 }}>
-                  <Sel label="Class" value={classId} onChange={setClassId} options={[{value:"",label:"Select class…"},...classList.map(c=>({value:String(c.id),label:c.name}))]}/>
-                  <Sel label="Subject" value={subjectId} onChange={setSubjectId} options={[{value:"",label:"Select subject…"},...subjectList.map(s=>({value:String(s.id),label:s.name}))]}/>
+                  <Sel label="Class" value={classId} onChange={setClassId} options={[{value:"",label:"Select class…"},...classesScoped.map(c=>({value:String(c.id),label:c.name}))]}/>
+                  <Sel label="Subject" value={subjectId} onChange={setSubjectId} options={[{value:"",label:"Select subject…"},...subjectsFor(classId).map(s=>({value:String(s.id),label:s.name}))]}/>
                   <Sel label="Term" value={termId} onChange={setTermId} options={[{value:"",label:"Select term…"},...termList.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))]}/>
                   <Sel label="Type" value={examType} onChange={setExamType} options={EXAM_TYPES}/>
                 </div>
@@ -3121,7 +3147,7 @@ const CBTCreate = ({ onNav }) => {
             </Card>
             <Card>
               <div style={{ fontSize:13, fontWeight:700, marginBottom:13 }}>Access Control</div>
-              <Sel label="Assigned Class" value={classId} onChange={setClassId} options={[{value:"",label:"Select class…"},...classList.map(c=>({value:String(c.id),label:c.name}))]} style={{ marginBottom:12 }}/>
+              <Sel label="Assigned Class" value={classId} onChange={setClassId} options={[{value:"",label:"Select class…"},...classesScoped.map(c=>({value:String(c.id),label:c.name}))]} style={{ marginBottom:12 }}/>
               <Input label="Start Date & Time" value={startAt} onChange={setStartAt} type="datetime-local" style={{ marginBottom:12 }}/>
               <Input label="End Date & Time"   value={endAt}   onChange={setEndAt}   type="datetime-local"/>
             </Card>
