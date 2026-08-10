@@ -1718,29 +1718,61 @@ const AttendanceSummaryTab = ({ flash }) => {
     getTerms().then(r=>{ const l=arrOf(r); setTerms(l); if(l.length) setTermId(String(l[l.length-1].id)); }).catch(()=>{});
   },[]);
 
-  useEffect(()=>{
-    if(!classId||!termId) return;
-    let cancelled=false; setLoading(true);
-    Promise.all([
-      getStudents({class_id:classId,per_page:100}).then(r=>arrOf(r,"students").map(normStudent)).catch(()=>[]),
-      getTermAttendance(classId,termId).then(r=>arrOf(r)).catch(()=>[]),
-    ]).then(([roster,summary])=>{
-      if(cancelled) return;
+  // Pull the roster + any saved totals for the selected class/term.
+  const reload=async()=>{
+    if(!classId||!termId) return [];
+    setLoading(true);
+    try{
+      const [roster,summary]=await Promise.all([
+        getStudents({class_id:classId,per_page:100}).then(r=>arrOf(r,"students").map(normStudent)).catch(()=>[]),
+        getTermAttendance(classId,termId).then(r=>arrOf(r)).catch(()=>[]),
+      ]);
       setStudents(roster);
       const byId={}; summary.forEach(a=>{ byId[a.student_id]={ present:a.present??"", absent:a.absent??"", days_opened:a.days_opened??"" }; });
       const v={}; roster.forEach(s=>{ v[s.id]=byId[s.id]||{ present:"", absent:"", days_opened:"" }; });
       setVals(v);
-    }).finally(()=>{ if(!cancelled) setLoading(false); });
-    return ()=>{ cancelled=true; };
+      return roster;
+    } finally { setLoading(false); }
+  };
+
+  useEffect(()=>{ let live=true; (async()=>{ await reload(); if(!live){/*noop*/} })(); return ()=>{ live=false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[classId,termId]);
 
-  const set=(id,k,val)=>setVals(p=>({...p,[id]:{...(p[id]||{}),[k]:val}}));
-  const applyOpenedToAll=()=>{ if(openedAll==="") return; setVals(p=>{ const n={...p}; students.forEach(s=>{ n[s.id]={...(n[s.id]||{}),days_opened:openedAll}; }); return n; }); };
+  // Set one field and, whenever "days school opened" is known, auto-fill the
+  // complementary field: present ⇄ absent always sum to the days opened.
+  const set=(id,k,val)=>setVals(p=>{
+    const cur={...(p[id]||{}), [k]:val};
+    const opened=cur.days_opened===""||cur.days_opened==null ? null : Number(cur.days_opened);
+    const inRange=x=> x!==null && Number.isFinite(x) && x>=0 && (opened==null || x<=opened);
+    if(opened!=null && Number.isFinite(opened)){
+      if(k==="present"){
+        const pr=val===""?null:Number(val);
+        if(inRange(pr)) cur.absent=String(opened-pr);
+      } else if(k==="absent"){
+        const ab=val===""?null:Number(val);
+        if(inRange(ab)) cur.present=String(opened-ab);
+      } else if(k==="days_opened"){
+        // Days-opened changed for this row: recompute absent from present if set.
+        const pr=cur.present===""?null:Number(cur.present);
+        if(inRange(pr)) cur.absent=String(opened-pr);
+      }
+    }
+    return {...p,[id]:cur};
+  });
+
+  // Apply the one "school opened" figure to every student, recomputing absent
+  // from any present count already entered.
+  const applyOpenedToAll=()=>{ if(openedAll==="") return; const opened=Number(openedAll); setVals(p=>{ const n={...p}; students.forEach(s=>{ const cur={...(n[s.id]||{}), days_opened:openedAll}; const pr=cur.present===""||cur.present==null?null:Number(cur.present); if(pr!=null&&Number.isFinite(pr)&&pr>=0&&pr<=opened) cur.absent=String(opened-pr); n[s.id]=cur; }); return n; }); };
 
   const save=async()=>{
     const records=students.map(s=>({ student_id:s.id, ...(vals[s.id]||{}) }));
     setSaving(true);
-    try{ await saveTermAttendance(Number(classId),Number(termId),records); flash("Attendance totals saved."); }
+    try{
+      await saveTermAttendance(Number(classId),Number(termId),records);
+      await reload();                 // re-pull so the grid reflects what actually persisted
+      flash("Attendance totals saved.");
+    }
     catch(err){ flash(err?.message || err?.data?.error || "Save failed."); }
     finally{ setSaving(false); }
   };
@@ -1768,7 +1800,7 @@ const AttendanceSummaryTab = ({ flash }) => {
         </div>
       </div>
       <div style={{ padding:"10px 14px", borderRadius:9, background:C.accentLight, fontSize:12, color:C.accentDark }}>
-        ℹ️ Enter each student's total <strong>present</strong> and <strong>absent</strong> counts and the number of times the <strong>school opened</strong> for the term. These appear in the report card's Attendance box (Attendance % = present ÷ school opened).
+        ℹ️ Set the number of times the <strong>school opened</strong> (use “Apply to all” to fill every row), then enter each student's <strong>present</strong> count — the <strong>absent</strong> field fills in automatically (and vice-versa). These appear in the report card's Attendance box (Attendance % = present ÷ school opened).
       </div>
       <Card style={{ padding:0, overflowX:"auto" }}>
         {loading ? (
