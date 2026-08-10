@@ -291,7 +291,14 @@ const Sidebar = ({active,onNav,collapsed,setCollapsed,school,isMobile,mobileOpen
 
 // ── Topbar ────────────────────────────────────────────────────────────────────
 const TITLES={dashboard:"Dashboard",students:"Student Management",staff:"Staff Management",attendance:"Attendance",grades:"Grades & Report Cards",timetable:"Timetable",cbt:"CBT Exams","cbt-create":"Create Exam","cbt-take":"Take Exam","ai-tools":"AI Teaching Tools",fees:"Fees & Finance",messaging:"Messaging",hostel:"Hostel Management",inventory:"Inventory",library:"Library Management",settings:"Settings","admissions":"Admissions & Enrollment","academic-mgmt":"Academic Management","student-extras":"Student Records","transport":"Transport Management","certificates":"Certificates & ID Cards","multi-branch":"Multi-Branch Management","cms":"Website & CMS","hr":"HR Module","online-learning":"Online Learning","communications":"Communications","analytics":"Reports & Analytics"};
-const Topbar = ({page,onNav,onLogout,school,isMobile,onMenu}) => (
+// Friendly labels for the role stored on the user record.
+const ROLE_LABELS={super_admin:"Super Admin",school_admin:"Administrator",teacher:"Teacher",student:"Student",parent:"Parent",accountant:"Accountant"};
+const Topbar = ({page,onNav,onLogout,school,user,isMobile,onMenu}) => {
+  const fullName=[user?.first_name,user?.last_name].filter(Boolean).join(" ").trim()
+              || user?.name || user?.email || "User";
+  const initials=((user?.first_name?.[0]||fullName?.[0]||"") + (user?.last_name?.[0]||"")).toUpperCase() || "U";
+  const roleLabel=ROLE_LABELS[user?.role] || school?.name || "—";
+  return (
   <header className="no-print" style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:isMobile?"0 12px":"0 24px",height:60,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10,gap:8}}>
     <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
       {isMobile&&<button onClick={onMenu} aria-label="Open menu" style={{background:"#F1F5F9",border:"none",borderRadius:8,padding:"7px 11px",fontSize:16,color:C.textMid,cursor:"pointer",lineHeight:1,flexShrink:0}}>☰</button>}
@@ -305,16 +312,17 @@ const Topbar = ({page,onNav,onLogout,school,isMobile,onMenu}) => (
         🔔<span style={{background:C.coral,color:"#fff",borderRadius:"50%",width:14,height:14,fontSize:9,display:"flex",alignItems:"center",justifyContent:"center"}}>3</span>
       </button>
       <div onClick={()=>onNav("settings")} style={{display:"flex",alignItems:"center",gap:9,cursor:"pointer",padding:"4px 10px",borderRadius:8,transition:"background .15s"}} onMouseEnter={e=>e.currentTarget.style.background="#F1F5F9"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-        <Avatar initials="SA" size={30} color={C.accent}/>
+        <Avatar initials={initials} size={30} color={C.accent}/>
         {!isMobile&&<div style={{lineHeight:1.3}}>
-          <div style={{fontSize:12,fontWeight:600}}>Super Admin</div>
-          <div style={{fontSize:10,color:C.textMuted}}>{school?.name || "—"}</div>
+          <div style={{fontSize:12,fontWeight:600}}>{fullName}</div>
+          <div style={{fontSize:10,color:C.textMuted}}>{roleLabel}</div>
         </div>}
       </div>
       <button onClick={onLogout} title="Log out" style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 11px",fontSize:12,color:C.textMid,cursor:"pointer",fontFamily:"Sora,sans-serif"}} onMouseEnter={e=>{e.currentTarget.style.background=C.coralLight;e.currentTarget.style.color=C.coral;e.currentTarget.style.borderColor=C.coral+"55";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=C.textMid;e.currentTarget.style.borderColor=C.border;}}>↪{isMobile?"":" Logout"}</button>
     </div>
   </header>
-);
+  );
+};
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 const Dashboard = ({onNav}) => {
@@ -6957,7 +6965,7 @@ export default function App() {
                  isMobile={isMobile} mobileOpen={mobileNav} onClose={()=>setMobileNav(false)}
                  allowed={restricted ? TEACHER_PAGES : null}/>
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
-          <Topbar page={activePage} onNav={handleNav} onLogout={handleLogout} school={school}
+          <Topbar page={activePage} onNav={handleNav} onLogout={handleLogout} school={school} user={me}
                   isMobile={isMobile} onMenu={()=>setMobileNav(true)}/>
           <main style={{ flex:1, padding:isMobile?"14px 12px":22, overflowY:"auto" }}>
             {PAGES[activePage] || (restricted ? <Students/> : <Dashboard onNav={go}/>)}
