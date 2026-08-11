@@ -33,8 +33,9 @@ const fmtNum   = (n) => Number(n || 0).toLocaleString("en-NG");
 
 // Print the current sheet with a blank document title, so the browser's
 // header/footer doesn't stamp the app name across the top of the PDF.
-const printSheet = () => {
+const printSheet = (name) => {
   const prev = document.title;
+  if (name && String(name).trim()) { document.title = String(name).trim(); } else
   document.title = " "; // non-breaking space → blank centre header
   const restore = () => { document.title = prev; window.removeEventListener("afterprint", restore); };
   window.addEventListener("afterprint", restore);
@@ -1568,52 +1569,62 @@ const ReportSheet = ({ rc }) => {
           )) : <tr><td colSpan={8} style={{ ...rcTdC, color:C.textMuted, padding:"16px" }}>No grades recorded for this term.</td></tr>}
         </tbody>
       </table>
-      {/* Overall summary */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, fontSize:12, marginBottom:14 }}>
-        {[
-          ["Overall Marks", `${rc.overall?.total} / ${rc.overall?.max}`],
-          ["Percentage", `${rc.overall?.percentage}%`],
-          ["Grade", rc.overall?.grade],
-          ["Position in Class", `${ordinal(rc.overall?.position)} of ${rc.class_size}`],
-          ["Class Highest", `${rc.overall?.class_highest}%`],
-          ["Class Lowest", `${rc.overall?.class_lowest}%`],
-        ].map(([k,v]) => (
-          <div key={k} style={{ border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 10px" }}>
-            <div style={{ fontSize:10, color:C.textMuted, textTransform:"uppercase" }}>{k}</div>
-            <div style={{ fontSize:14, fontWeight:700 }}>{v}</div>
-          </div>
-        ))}
-      </div>
-      {/* Behaviour */}
-      <div style={{ border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden", marginBottom: hasAttendance ? 10 : 14 }}>
-        <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase" }}>Affective Traits / Behavioural Assessment</div>
+      {/* Overall summary — single horizontal table */}
+      <table style={{ width:"100%", borderCollapse:"collapse", marginBottom:14 }}>
+        <thead>
+          <tr style={{ background:"#F8FAFC" }}>
+            {["Overall Marks","Percentage","Grade","Position in Class","Class Highest","Class Lowest"]
+              .map(h => <th key={h} style={{ ...rcThC, fontSize:9 }}>{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={{ ...rcTdC, fontWeight:700 }}>{rc.overall?.total} / {rc.overall?.max}</td>
+            <td style={{ ...rcTdC, fontWeight:700 }}>{rc.overall?.percentage}%</td>
+            <td style={rcTdC}><Badge color={letterColor(rc.overall?.grade)} size="sm">{rc.overall?.grade}</Badge></td>
+            <td style={{ ...rcTdC, fontWeight:700 }}>{ordinal(rc.overall?.position)} of {rc.class_size}</td>
+            <td style={{ ...rcTdC, background:C.accentLight }}>{rc.overall?.class_highest}%</td>
+            <td style={{ ...rcTdC, background:C.coralLight }}>{rc.overall?.class_lowest}%</td>
+          </tr>
+        </tbody>
+      </table>
+      {/* Behaviour — single horizontal table (traits as columns) */}
+      <div style={{ marginBottom: hasAttendance ? 10 : 14 }}>
+        <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase", border:`1px solid ${C.border}`, borderBottom:"none", borderTopLeftRadius:8, borderTopRightRadius:8 }}>Affective Traits / Behavioural Assessment</div>
         {rc.behaviour?.length ? (
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr" }}>
-            {rc.behaviour.map((b,i) => (
-              <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 10px", borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
-                <span>{b.trait}</span><strong>{b.score != null ? `${b.score}/5` : (b.rating || "—")}</strong>
-              </div>
-            ))}
-          </div>
-        ) : <div style={{ padding:"14px 10px", fontSize:11, color:C.textMuted, textAlign:"center" }}>No behavioural records.</div>}
+          <table style={{ width:"100%", borderCollapse:"collapse" }}>
+            <thead>
+              <tr style={{ background:"#F8FAFC" }}>
+                {rc.behaviour.map((b,i) => <th key={i} style={{ ...rcThC, fontSize:9 }}>{b.trait}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                {rc.behaviour.map((b,i) => <td key={i} style={{ ...rcTdC, fontWeight:700 }}>{b.score != null ? `${b.score}/5` : (b.rating || "—")}</td>)}
+              </tr>
+            </tbody>
+          </table>
+        ) : <div style={{ padding:"14px 10px", fontSize:11, color:C.textMuted, textAlign:"center", border:`1px solid ${C.border}` }}>No behavioural records.</div>}
       </div>
-      {/* Attendance — single horizontal row of columns to save vertical space */}
+      {/* Attendance — single horizontal table */}
       {hasAttendance && (
-        <div style={{ border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden", marginBottom:14 }}>
-          <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase" }}>Attendance</div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)" }}>
-            {[
-              ["Times School Opened", rc.attendance?.total_days],
-              ["Times Present", rc.attendance?.present],
-              ["Times Absent", rc.attendance?.absent ?? "—"],
-              ["Attendance %", `${rc.attendance?.percentage}%`],
-            ].map(([k,v],i) => (
-              <div key={k} style={{ padding:"8px 10px", textAlign:"center", borderLeft: i ? `1px solid ${C.border}` : "none" }}>
-                <div style={{ fontSize:9, color:C.textMuted, textTransform:"uppercase" }}>{k}</div>
-                <div style={{ fontSize:14, fontWeight:700, marginTop:2 }}>{v}</div>
-              </div>
-            ))}
-          </div>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ background:"#F8FAFC", padding:"7px 10px", fontSize:10, fontWeight:700, textTransform:"uppercase", border:`1px solid ${C.border}`, borderBottom:"none", borderTopLeftRadius:8, borderTopRightRadius:8 }}>Attendance</div>
+          <table style={{ width:"100%", borderCollapse:"collapse" }}>
+            <thead>
+              <tr style={{ background:"#F8FAFC" }}>
+                {["Times School Opened","Times Present","Times Absent","Attendance %"].map(h => <th key={h} style={{ ...rcThC, fontSize:9 }}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={{ ...rcTdC, fontWeight:700 }}>{rc.attendance?.total_days}</td>
+                <td style={{ ...rcTdC, fontWeight:700 }}>{rc.attendance?.present}</td>
+                <td style={{ ...rcTdC, fontWeight:700 }}>{rc.attendance?.absent ?? "—"}</td>
+                <td style={{ ...rcTdC, fontWeight:700 }}>{rc.attendance?.percentage}%</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       )}
       {/* Comments */}
@@ -2311,6 +2322,7 @@ const Grades = () => {
   const [sheets,        setSheets]        = useState([]);   // report data queued for printing
   const [rcBusy,        setRcBusy]        = useState(false);
   const [pendingPrint,  setPendingPrint]  = useState(false);
+  const [printName,     setPrintName]     = useState("");   // suggested PDF filename for the queued print
   const [cumTermIds,    setCumTermIds]    = useState([]);
   const [cum,           setCum]           = useState(null);
   const [cumLoading,    setCumLoading]    = useState(false);
@@ -2422,8 +2434,8 @@ const Grades = () => {
 
   // Print once the queued sheets have rendered into the DOM.
   useEffect(() => {
-    if (pendingPrint && sheets.length) { printSheet(); setPendingPrint(false); }
-  }, [pendingPrint, sheets]);
+    if (pendingPrint && sheets.length) { printSheet(printName); setPendingPrint(false); }
+  }, [pendingPrint, sheets, printName]);
 
   // Fetch the cumulative report when student/terms change.
   useEffect(() => {
@@ -2521,6 +2533,12 @@ const Grades = () => {
         if (res?.data) out.push(res.data);
       }
       if (!out.length) { setRcError("No report data found for the selected student(s)."); return; }
+      // A single report card saves as the student's full name; a bulk print uses
+      // a class/term label (one PDF can't carry per-student filenames).
+      const termName = out[0]?.term?.name || "";
+      setPrintName(out.length === 1
+        ? (out[0]?.student?.name || "Report Card")
+        : `Report Cards${out[0]?.student?.class_name ? " - " + out[0].student.class_name : ""}${termName ? " - " + termName : ""}`);
       setSheets(out);
       setPendingPrint(true);
     } catch (e) {
