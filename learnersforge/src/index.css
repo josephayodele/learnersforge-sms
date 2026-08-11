@@ -168,7 +168,7 @@ code {
   .print-area th { page-break-inside: avoid; }
 
   /* Constrain the logo so the header never overflows the page. */
-  .print-area img { max-height: 46px !important; width: auto !important; }
+  .print-area img { max-height: 80px !important; width: auto !important; }
 
   /* Compact each report sheet so a full 12-subject sheet fits one page
      (on top of the zoom above). */

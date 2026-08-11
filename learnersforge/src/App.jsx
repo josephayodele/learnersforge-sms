@@ -1499,10 +1499,12 @@ const gradeColor  = g => g.startsWith("A")?"green":g.startsWith("B")?"blue":g.st
 // Single-letter grade colour (report-card scale A–F).
 const letterColor = g => ({A:"green",B:"blue",C:"amber",D:"amber",E:"red",F:"red"}[g]||"gray");
 const ordinal     = n => { if(n==null) return "—"; const s=["th","st","nd","rd"],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); };
-// Report-card table cell styles.
-const rcThL = { padding:"8px 10px", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", textAlign:"left",   border:`1px solid ${C.border}` };
+// Report sheets use a serif face for a formal, printed-document feel.
+const RC_FONT = "'Georgia','Times New Roman',Cambria,serif";
+// Report-card table cell styles — bolder/larger for legibility on the printed sheet.
+const rcThL = { padding:"9px 11px", fontSize:11.5, fontWeight:800, color:C.text, textTransform:"uppercase", letterSpacing:".3px", textAlign:"left", border:`1px solid ${C.border}` };
 const rcThC = { ...rcThL, textAlign:"center" };
-const rcTd  = { padding:"7px 9px", fontSize:12, border:`1px solid ${C.border}` };
+const rcTd  = { padding:"8px 10px", fontSize:13.5, fontWeight:600, color:C.text, border:`1px solid ${C.border}` };
 const rcTdC = { ...rcTd, textAlign:"center" };
 
 // A single printable report sheet. Rendered one-per-student inside a print-only
@@ -1511,11 +1513,11 @@ const ReportSheet = ({ rc }) => {
   if (!rc) return null;
   const hasAttendance = (rc.attendance?.total_days > 0) || (rc.attendance?.present > 0) || (rc.attendance?.absent > 0);
   return (
-    <Card className="print-area report-sheet" style={{ maxWidth:820, margin:"0 auto 18px", border:"2px solid "+C.border }}>
+    <Card className="print-area report-sheet" style={{ maxWidth:820, margin:"0 auto 18px", border:"2px solid "+C.border, fontFamily:RC_FONT, color:C.text }}>
       {/* Header — school logo + name, then report-card band */}
       <div style={{ borderBottom:`2px solid ${C.navy}`, paddingBottom:12, marginBottom:14 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:14 }}>
-          {rc.school?.logo_url && <img src={rc.school.logo_url} alt="" style={{ height:60, width:60, objectFit:"contain", flexShrink:0 }}/>}
+          {rc.school?.logo_url && <img src={rc.school.logo_url} alt="" style={{ height:92, width:92, objectFit:"contain", flexShrink:0 }}/>}
           <div style={{ textAlign:"center" }}>
             <div style={{ fontSize:22, fontWeight:800, color:C.navy, lineHeight:1.15 }}>{rc.school?.name || "—"}</div>
             {rc.school?.motto && <div style={{ fontSize:10, fontStyle:"italic", color:C.textMid }}>{rc.school.motto}</div>}
@@ -1527,19 +1529,23 @@ const ReportSheet = ({ rc }) => {
           <div style={{ fontSize:11, color:C.textMid, marginTop:5 }}>Academic Session: {rc.term?.year || "—"}</div>
         </div>
       </div>
-      {/* Student row */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 24px", fontSize:12, marginBottom:12 }}>
-        {[
-          ["Student's Name", rc.student?.name],
-          ["Student ID", rc.student?.sid],
-          ["Class", rc.student?.class_name],
-          ["Term", rc.term?.name],
-        ].map(([k,v]) => (
-          <div key={k} style={{ display:"flex", justifyContent:"space-between", gap:8, borderBottom:`1px dotted ${C.border}`, paddingBottom:3 }}>
-            <span style={{ color:C.textMuted }}>{k}:</span><strong style={{ textAlign:"right" }}>{v || "—"}</strong>
-          </div>
-        ))}
-      </div>
+      {/* Student row — single horizontal table */}
+      <table style={{ width:"100%", borderCollapse:"collapse", marginBottom:12 }}>
+        <thead>
+          <tr style={{ background:"#F8FAFC" }}>
+            <th style={rcThL}>Student's Name</th>
+            <th style={rcThC}>Class</th>
+            <th style={rcThC}>Term</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={{ ...rcTd, fontWeight:700 }}>{rc.student?.name || "—"}</td>
+            <td style={{ ...rcTdC, fontWeight:700 }}>{rc.student?.class_name || "—"}</td>
+            <td style={{ ...rcTdC, fontWeight:700 }}>{rc.term?.name || "—"}</td>
+          </tr>
+        </tbody>
+      </table>
       {/* Scholastic table */}
       <table style={{ width:"100%", borderCollapse:"collapse", marginBottom:12 }}>
         <thead>
