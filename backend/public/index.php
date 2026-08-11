@@ -202,6 +202,9 @@ try {
     } elseif ($path === '/api/v1/grades/report-card' && $method === 'GET') {
         GradeController::reportCard(authGuard());
 
+    } elseif ($path === '/api/v1/grades/broadsheet' && $method === 'GET') {
+        GradeController::broadsheet(authGuard());
+
     } elseif ($path === '/api/v1/grades/cumulative' && $method === 'GET') {
         GradeController::cumulative(authGuard());
 

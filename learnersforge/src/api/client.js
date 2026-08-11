@@ -96,6 +96,8 @@ export const getGrades      = (params = {}) => api.get('/grades', { params });
 export const submitGrades   = grades => api.post('/grades/bulk', { grades });
 export const getReportCard  = (student_id, term_id = 2) =>
   api.get('/grades/report-card', { params: { student_id, term_id } });
+export const getBroadsheet  = (class_id, term_id) =>
+  api.get('/grades/broadsheet', { params: { class_id, term_id } });
 export const getCumulative  = (student_id, term_ids = '1,2') =>
   api.get('/grades/cumulative', { params: { student_id, term_ids } });
 export const getBehaviour   = (params = {}) => api.get('/behaviour', { params });

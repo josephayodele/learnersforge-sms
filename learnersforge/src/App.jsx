@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
 import CCTVModule from "./CCTVModule";
-import { getStudents, getDashboard, getReportCard, getCumulative, getTerms, getClasses, createClass, getSubjects,
+import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
          createSubject, deleteSubject,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
@@ -1707,6 +1707,146 @@ const arrOf = (res, key) => Array.isArray(res?.data?.[key]) ? res.data[key]
                          : Array.isArray(res?.data) ? res.data
                          : Array.isArray(res) ? res : [];
 
+// ── Broadsheet ───────────────────────────────────────────────────────────────
+// A whole-class results sheet for one term: per-subject CA + exam split, overall
+// total / percentage / grade, ranked by position. Viewable and downloadable (xlsx).
+const gradeColorFor = g => g==="A"?C.accentDark : g==="B"?C.accent : g==="C"?C.amber : g==="F"?C.coral : C.textMid;
+const BroadsheetTab = ({ flash, classOptions }) => {
+  const [terms,setTerms]=useState([]);
+  const [classId,setClassId]=useState("");
+  const [termId,setTermId]=useState("");
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [downloading,setDownloading]=useState(false);
+
+  useEffect(()=>{ getTerms().then(r=>{ const l=arrOf(r); setTerms(l); if(l.length) setTermId(String(l[l.length-1].id)); }).catch(()=>{}); },[]);
+  useEffect(()=>{ if(!classId && classOptions?.length) setClassId(String(classOptions[0].value)); },[classOptions,classId]);
+
+  useEffect(()=>{
+    if(!classId||!termId){ setData(null); return; }
+    let live=true; setLoading(true);
+    getBroadsheet(Number(classId),Number(termId))
+      .then(r=>{ if(live) setData(r?.data ?? r); })
+      .catch(err=>{ if(live){ setData(null); flash(err?.message||err?.error||"Could not load broadsheet."); } })
+      .finally(()=>{ if(live) setLoading(false); });
+    return ()=>{ live=false; };
+  },[classId,termId]);
+
+  const subjects = data?.subjects || [];
+  const rows = [...(data?.rows || [])].sort((a,b)=>a.position-b.position);
+  const fmt = n => (n===null||n===undefined||n==="") ? "–" : n;
+
+  const download = async () => {
+    if(!data || !rows.length) return;
+    setDownloading(true);
+    try{
+      const mod = await import("xlsx");
+      const XLSX = mod?.utils ? mod : (mod?.default || mod);
+      if(!XLSX?.utils) throw new Error("Spreadsheet export failed to load. Please retry.");
+      const h1=["Adm No","Student","Father/Guardian"], h2=["","",""];
+      subjects.forEach(s=>{ h1.push(s.name,""); h2.push("CA","Exam"); });
+      h1.push("Total","%","Grade","Position"); h2.push("","","","");
+      const aoa=[h1,h2];
+      rows.forEach(r=>{
+        const row=[r.admission, r.name, r.guardian||""];
+        subjects.forEach(s=>{ const c=r.subjects?.[s.id]||{}; row.push(c.ca ?? "", c.exam ?? ""); });
+        row.push(r.total, r.percentage, r.grade, r.position);
+        aoa.push(row);
+      });
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const merges=[{s:{r:0,c:0},e:{r:1,c:0}},{s:{r:0,c:1},e:{r:1,c:1}},{s:{r:0,c:2},e:{r:1,c:2}}];
+      subjects.forEach((s,i)=>{ const c=3+i*2; merges.push({s:{r:0,c},e:{r:0,c:c+1}}); });
+      const tail=3+subjects.length*2;
+      for(let k=0;k<4;k++) merges.push({s:{r:0,c:tail+k},e:{r:1,c:tail+k}});
+      ws["!merges"]=merges;
+      ws["!cols"]=[{wch:12},{wch:24},{wch:22},...subjects.flatMap(()=>[{wch:6},{wch:6}]),{wch:8},{wch:7},{wch:7},{wch:9}];
+      const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,"Broadsheet");
+      const clean=s=>String(s||"").replace(/[^\w-]+/g,"_");
+      XLSX.writeFile(wb, `Broadsheet_${clean(data.class?.name)}_${clean(data.term?.name)}.xlsx`);
+    }catch(err){ flash(err?.message||"Download failed."); }
+    finally{ setDownloading(false); }
+  };
+
+  const thBase={ padding:"8px 10px", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", background:"#F1F5F9", borderBottom:`1px solid ${C.border}`, whiteSpace:"nowrap" };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:14 }} className="fi">
+      <div className="no-print" style={{ display:"flex", gap:10, alignItems:"flex-end", flexWrap:"wrap" }}>
+        <Sel label="Class" value={classId} onChange={setClassId} options={classOptions} style={{ width:180 }}/>
+        <Sel label="Term"  value={termId}  onChange={setTermId}  options={terms.map(t=>({value:String(t.id),label:t.year_name?`${t.name} · ${t.year_name}`:t.name}))} style={{ width:190 }}/>
+        <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
+          <Btn variant="secondary" size="sm" onClick={printSheet} disabled={!rows.length}>🖨 Print</Btn>
+          <Btn variant="primary" size="sm" onClick={download} disabled={downloading || !rows.length}>{downloading?"Preparing…":"⬇ Download Excel"}</Btn>
+        </div>
+      </div>
+
+      {data && (
+        <div style={{ fontSize:13, fontWeight:700, color:C.text }}>
+          {data.class?.name} · {data.term?.name}{data.term?.year?` · ${data.term.year}`:""}
+          <span style={{ fontWeight:400, color:C.textMuted, marginLeft:8, fontSize:12 }}>({rows.length} students · max {data.possible_max})</span>
+        </div>
+      )}
+
+      <Card style={{ padding:0, overflow:"auto", maxHeight:"74vh" }}>
+        {loading ? (
+          <div style={{ padding:"40px", textAlign:"center", fontSize:12, color:C.textMuted }}>Loading…</div>
+        ) : !data ? (
+          <div style={{ padding:"40px", textAlign:"center", fontSize:12, color:C.textMuted }}>Select a class and term.</div>
+        ) : rows.length===0 ? (
+          <div style={{ padding:"40px", textAlign:"center", fontSize:12, color:C.textMuted }}>No students in this class.</div>
+        ) : subjects.length===0 ? (
+          <div style={{ padding:"40px", textAlign:"center", fontSize:12, color:C.textMuted }}>No subjects/grades recorded for this class this term.</div>
+        ) : (
+          <table style={{ borderCollapse:"collapse", fontSize:12, minWidth:"100%" }}>
+            <thead>
+              <tr>
+                <th rowSpan={2} style={{ ...thBase, textAlign:"left", position:"sticky", top:0, left:0, zIndex:5 }}>Adm No</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign:"left", position:"sticky", top:0, left:0, zIndex:5 }}>Student</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign:"left", position:"sticky", top:0, zIndex:4 }}>Father/Guardian</th>
+                {subjects.map(s=>(
+                  <th key={s.id} colSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4, borderLeft:`1px solid ${C.border}` }}>{s.name}</th>
+                ))}
+                <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4, borderLeft:`2px solid ${C.border}` }}>Total</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4 }}>%</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4 }}>Grade</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4 }}>Pos</th>
+              </tr>
+              <tr>
+                {subjects.map(s=>(
+                  <Fragment key={s.id}>
+                    <th style={{ ...thBase, top:31, textAlign:"center", position:"sticky", zIndex:3, fontSize:9, borderLeft:`1px solid ${C.border}` }}>CA</th>
+                    <th style={{ ...thBase, top:31, textAlign:"center", position:"sticky", zIndex:3, fontSize:9 }}>Exam</th>
+                  </Fragment>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r,idx)=>(
+                <tr key={r.student_id} style={{ borderBottom:`1px solid ${C.border}`, background: idx%2?"#FAFCFE":C.surface }}>
+                  <td style={{ padding:"7px 10px", position:"sticky", left:0, zIndex:2, background:"inherit", fontWeight:600, whiteSpace:"nowrap" }}>{r.admission}</td>
+                  <td style={{ padding:"7px 10px", position:"sticky", left:0, zIndex:2, background:"inherit", fontWeight:600, whiteSpace:"nowrap" }}>{r.name}</td>
+                  <td style={{ padding:"7px 10px", color:C.textMid, whiteSpace:"nowrap" }}>{r.guardian || "—"}</td>
+                  {subjects.map(s=>{ const c=r.subjects?.[s.id]||{}; return (
+                    <Fragment key={s.id}>
+                      <td style={{ padding:"7px 8px", textAlign:"center", borderLeft:`1px solid ${C.border}` }}>{fmt(c.ca)}</td>
+                      <td style={{ padding:"7px 8px", textAlign:"center" }}>{fmt(c.exam)}</td>
+                    </Fragment>
+                  ); })}
+                  <td style={{ padding:"7px 9px", textAlign:"center", fontWeight:700, borderLeft:`2px solid ${C.border}` }}>{r.total}</td>
+                  <td style={{ padding:"7px 9px", textAlign:"center" }}>{r.percentage}%</td>
+                  <td style={{ padding:"7px 9px", textAlign:"center", fontWeight:700, color:gradeColorFor(r.grade) }}>{r.grade}</td>
+                  <td style={{ padding:"7px 9px", textAlign:"center", fontWeight:700 }}>{r.position}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+    </div>
+  );
+};
+
 // ── Report-card attendance totals ───────────────────────────────────────────────
 // Teachers enter, per student per term: times present, times absent, and the number
 // of times the school opened. These feed the report card's Attendance box.
@@ -2429,7 +2569,7 @@ const Grades = () => {
   return (
     <div className="fi">
       <div className="no-print" style={{ display:"flex", gap:10, alignItems:"center", marginBottom:16, flexWrap:"wrap" }}>
-        <Tabs tabs={[{id:"scores",label:"📊 Scores"},{id:"psychomotor",label:"🏃 Psychomotor"},{id:"affective",label:"💙 Affective"},{id:"attendance",label:"🗓 Attendance"},{id:"cumulative",label:"📈 Cumulative"},{id:"reportcard",label:"🖨 Report Card"},{id:"remarks",label:"⚙️ Remark Settings"}]} active={tab} onChange={setTab}/>
+        <Tabs tabs={[{id:"scores",label:"📊 Scores"},{id:"psychomotor",label:"🏃 Psychomotor"},{id:"affective",label:"💙 Affective"},{id:"attendance",label:"🗓 Attendance"},{id:"broadsheet",label:"📋 Broadsheet"},{id:"cumulative",label:"📈 Cumulative"},{id:"reportcard",label:"🖨 Report Card"},{id:"remarks",label:"⚙️ Remark Settings"}]} active={tab} onChange={setTab}/>
         <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
           {tab==="scores" && <Btn variant="secondary" size="sm" onClick={openCAConfig}>⚙️ CA Settings</Btn>}
           {isEntryTab && <Btn variant="primary" size="sm" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "💾 Save"}</Btn>}
@@ -2701,6 +2841,8 @@ const Grades = () => {
       )}
 
       {tab==="attendance" && <AttendanceSummaryTab flash={flash}/>}
+
+      {tab==="broadsheet" && <BroadsheetTab flash={flash} classOptions={classOptsScoped}/>}
 
       {tab==="remarks" && <RemarkSettings flash={flash}/>}
 

@@ -925,6 +925,100 @@ class GradeController {
         ]);
     }
 
+    // Class broadsheet: every student in a class for one term, with each subject's
+    // CA and exam split, overall total/percentage/grade, ranked by position.
+    public static function broadsheet(array $user): void {
+        $classId = (int)($_GET['class_id'] ?? 0);
+        $termId  = (int)($_GET['term_id']  ?? 0);
+        if (!$classId || !$termId) respond(null, 422, 'class_id and term_id required');
+        if (!Perm::canAccessClass($user, $classId)) respond(null, 403, 'You are not assigned to this class.');
+
+        $class = DB::one('SELECT name FROM classes WHERE id=? AND school_id=?', [$classId, (int)$user['school_id']]);
+        if (!$class) respond(null, 404, 'Class not found');
+        $term   = DB::one('SELECT t.name, ay.name AS year FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id WHERE t.id=?', [$termId]);
+        $school = DB::one('SELECT name FROM schools WHERE id=?', [(int)$user['school_id']]);
+
+        // Which enabled components form the "exam" portion (is_exam flag or "exam" label).
+        $examIds = [];
+        foreach (DB::query('SELECT id,label,is_exam FROM ca_types WHERE school_id=? AND is_enabled=1', [(int)$user['school_id']]) as $ct) {
+            if ((int)($ct['is_exam'] ?? 0) === 1 || stripos($ct['label'], 'exam') !== false) $examIds[(int)$ct['id']] = true;
+        }
+
+        // Subject columns: the class's mapped subjects (plus any that already have grades).
+        $subjMap = [];
+        foreach (DB::query('SELECT sub.id, sub.name FROM class_subjects cs JOIN subjects sub ON sub.id=cs.subject_id WHERE cs.class_id=?', [$classId]) as $s) {
+            $subjMap[(int)$s['id']] = $s['name'];
+        }
+
+        $students = DB::query(
+            'SELECT s.id, COALESCE(NULLIF(s.admission_number, ""), s.student_id) AS adm,
+                    u.first_name, u.last_name, s.guardian_name
+             FROM students s JOIN users u ON u.id=s.user_id
+             WHERE s.class_id=? AND s.deleted_at IS NULL',
+            [$classId]
+        );
+
+        $rows = DB::query(
+            'SELECT g.student_id, g.subject_id, sub.name AS subject, g.ca_type_id, g.score
+             FROM grades g JOIN students s ON s.id=g.student_id JOIN subjects sub ON sub.id=g.subject_id
+             WHERE s.class_id=? AND g.term_id=? AND s.deleted_at IS NULL',
+            [$classId, $termId]
+        );
+        $agg = [];
+        foreach ($rows as $r) {
+            $st = (int)$r['student_id']; $su = (int)$r['subject_id']; $sc = (float)$r['score'];
+            if (!isset($subjMap[$su])) $subjMap[$su] = $r['subject'];
+            if (!isset($agg[$st][$su])) $agg[$st][$su] = ['ca' => 0.0, 'exam' => 0.0];
+            if (isset($examIds[(int)$r['ca_type_id']])) $agg[$st][$su]['exam'] += $sc;
+            else                                        $agg[$st][$su]['ca']   += $sc;
+        }
+
+        asort($subjMap);   // order columns alphabetically by subject name
+        $subjectCols = [];
+        foreach ($subjMap as $id => $name) $subjectCols[] = ['id' => $id, 'name' => $name];
+        $possibleMax = count($subjectCols) * 100;
+
+        $out = [];
+        foreach ($students as $st) {
+            $sid = (int)$st['id']; $subs = []; $total = 0.0;
+            foreach ($subjectCols as $col) {
+                $v = $agg[$sid][$col['id']] ?? null;
+                if ($v === null) { $subs[$col['id']] = ['ca' => null, 'exam' => null, 'total' => null]; continue; }
+                $t = $v['ca'] + $v['exam'];
+                $subs[$col['id']] = ['ca' => round($v['ca'], 1), 'exam' => round($v['exam'], 1), 'total' => round($t, 1)];
+                $total += $t;
+            }
+            $pct = $possibleMax > 0 ? ($total / $possibleMax) * 100 : 0;
+            $out[] = [
+                'student_id' => $sid,
+                'admission'  => $st['adm'],
+                'name'       => trim($st['first_name'].' '.$st['last_name']),
+                'guardian'   => $st['guardian_name'] ?: '',
+                'subjects'   => $subs,
+                'total'      => round($total, 1),
+                'percentage' => round($pct, 2),
+                'grade'      => self::gradeOf($pct),
+            ];
+        }
+
+        // Rank by total desc (competition ranking: equal totals share a position).
+        usort($out, fn($a, $b) => $b['total'] <=> $a['total']);
+        foreach ($out as $i => $o) {
+            $pos = 1; foreach ($out as $x) { if ($x['total'] > $o['total']) $pos++; }
+            $out[$i]['position'] = $pos;
+        }
+
+        respond([
+            'class'           => ['id' => $classId, 'name' => $class['name']],
+            'term'            => $term,
+            'school'          => $school,
+            'subjects'        => $subjectCols,
+            'max_per_subject' => 100,
+            'possible_max'    => $possibleMax,
+            'rows'            => $out,
+        ]);
+    }
+
     public static function cumulative(array $user): void {
         $studentId = (int)($_GET['student_id']??0);
         $terms     = array_values(array_filter(array_map('intval', explode(',', $_GET['term_ids']??'1,2'))));
