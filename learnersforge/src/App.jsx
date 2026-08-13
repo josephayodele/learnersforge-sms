@@ -1801,7 +1801,7 @@ const BroadsheetTab = ({ flash, classOptions }) => {
       {data && (
         <div style={{ fontSize:13, fontWeight:700, color:C.text }}>
           {data.class?.name} · {data.term?.name}{data.term?.year?` · ${data.term.year}`:""}
-          <span style={{ fontWeight:400, color:C.textMuted, marginLeft:8, fontSize:12 }}>({rows.length} students · max {data.possible_max})</span>
+          <span style={{ fontWeight:400, color:C.textMuted, marginLeft:8, fontSize:12 }}>({rows.length} students · a subject with no score/0 is treated as not offered)</span>
         </div>
       )}
 

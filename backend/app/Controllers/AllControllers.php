@@ -976,35 +976,43 @@ class GradeController {
         asort($subjMap);   // order columns alphabetically by subject name
         $subjectCols = [];
         foreach ($subjMap as $id => $name) $subjectCols[] = ['id' => $id, 'name' => $name];
-        $possibleMax = count($subjectCols) * 100;
 
+        // A subject only counts for a student if they have a recorded score with a
+        // total above 0. A missing record — or a straight 0 — means the student does
+        // NOT offer that subject, so it's left out of their total, denominator
+        // (percentage/average) and ranking entirely.
         $out = [];
         foreach ($students as $st) {
-            $sid = (int)$st['id']; $subs = []; $total = 0.0;
+            $sid = (int)$st['id']; $subs = []; $total = 0.0; $offered = 0;
             foreach ($subjectCols as $col) {
                 $v = $agg[$sid][$col['id']] ?? null;
-                if ($v === null) { $subs[$col['id']] = ['ca' => null, 'exam' => null, 'total' => null]; continue; }
-                $t = $v['ca'] + $v['exam'];
+                $t = $v ? $v['ca'] + $v['exam'] : 0;
+                if ($v === null || $t <= 0) { $subs[$col['id']] = ['ca' => null, 'exam' => null, 'total' => null]; continue; }
                 $subs[$col['id']] = ['ca' => round($v['ca'], 1), 'exam' => round($v['exam'], 1), 'total' => round($t, 1)];
                 $total += $t;
+                $offered++;
             }
-            $pct = $possibleMax > 0 ? ($total / $possibleMax) * 100 : 0;
+            $possible = $offered * 100;                       // per-student, only subjects offered
+            $pct = $possible > 0 ? ($total / $possible) * 100 : 0;
             $out[] = [
-                'student_id' => $sid,
-                'admission'  => $st['adm'],
-                'name'       => trim($st['first_name'].' '.$st['last_name']),
-                'guardian'   => $st['guardian_name'] ?: '',
-                'subjects'   => $subs,
-                'total'      => round($total, 1),
-                'percentage' => round($pct, 2),
-                'grade'      => self::gradeOf($pct),
+                'student_id'       => $sid,
+                'admission'        => $st['adm'],
+                'name'             => trim($st['first_name'].' '.$st['last_name']),
+                'guardian'         => $st['guardian_name'] ?: '',
+                'subjects'         => $subs,
+                'subjects_offered' => $offered,
+                'out_of'           => $possible,
+                'total'            => round($total, 1),
+                'percentage'       => round($pct, 2),
+                'grade'            => self::gradeOf($pct),
             ];
         }
 
-        // Rank by total desc (competition ranking: equal totals share a position).
-        usort($out, fn($a, $b) => $b['total'] <=> $a['total']);
+        // Because students may offer different numbers of subjects, rank by
+        // percentage (average) rather than raw total; break ties on total.
+        usort($out, fn($a, $b) => ($b['percentage'] <=> $a['percentage']) ?: ($b['total'] <=> $a['total']));
         foreach ($out as $i => $o) {
-            $pos = 1; foreach ($out as $x) { if ($x['total'] > $o['total']) $pos++; }
+            $pos = 1; foreach ($out as $x) { if ($x['percentage'] > $o['percentage']) $pos++; }
             $out[$i]['position'] = $pos;
         }
 
@@ -1014,7 +1022,6 @@ class GradeController {
             'school'          => $school,
             'subjects'        => $subjectCols,
             'max_per_subject' => 100,
-            'possible_max'    => $possibleMax,
             'rows'            => $out,
         ]);
     }
