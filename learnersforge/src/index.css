@@ -124,13 +124,19 @@ code {
 
   /* Each report sheet is scaled to fit on exactly one page, and starts a new page
      (bulk download = many sheets). `zoom` scales inline px sizes too (unlike a
-     font-size override), which is what keeps a full sheet within one A4 page. */
+     font-size override), which is what keeps a full sheet within one A4 page.
+     The scale leaves headroom so the enlarged logo/fonts don't spill a hair onto
+     a blank second page. */
   .report-sheet {
-    zoom: 0.82;
+    zoom: 0.74;
+    margin: 0 !important;
     page-break-after: always;
     page-break-inside: avoid;
   }
-  .report-sheet:last-child { page-break-after: auto; }
+  /* The final (or only) sheet must NOT force a trailing break — that is what
+     produced a blank extra page when a single card was printed. */
+  .report-sheet:last-child { page-break-after: auto !important; }
+  .print-only > *:last-child { page-break-after: auto !important; }
 
   html, body { background: #fff !important; }
 
@@ -176,5 +182,6 @@ code {
   .report-sheet th,
   .report-sheet td { padding: 2px 5px !important; }
   .report-sheet > div { margin-bottom: 6px !important; }
+  .report-sheet table { margin-bottom: 6px !important; }
   .report-sheet div { min-height: 0 !important; }
 }

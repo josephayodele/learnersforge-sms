@@ -194,6 +194,10 @@ export const createClass = data => api.post('/classes', data);
 export const getSubjects = () => api.get('/subjects');
 export const createSubject = data => api.post('/subjects', data);
 export const deleteSubject = id => api.delete(`/subjects/${id}`);
+// Per-class curriculum: which subjects a class offers (class_subjects).
+export const getClassSubjects  = class_id => api.get('/class-subjects', { params: { class_id } });
+export const mapClassSubject   = (class_id, subject_id) => api.post('/class-subjects', { class_id, subject_id });
+export const unmapClassSubject = (class_id, subject_id) => api.delete('/class-subjects', { params: { class_id, subject_id } });
 export const getTerms    = () => api.get('/terms');
 
 export default api;

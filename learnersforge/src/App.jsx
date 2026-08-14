@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
-         createSubject, deleteSubject,
+         createSubject, deleteSubject, getClassSubjects, mapClassSubject, unmapClassSubject,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, resetScores, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe, getMyAssignments,
@@ -5474,6 +5474,89 @@ const AddClassModal = ({ onClose, onCreated }) => {
   );
 };
 
+// Manage which subjects a class offers. Mapping a subject adds it to the class's
+// curriculum; unmapping removes it AND clears any scores it has in the class, so
+// it disappears from that class's report cards and broadsheet.
+const ClassSubjectsModal = ({ cls, allSubjects, onClose }) => {
+  const [mapped, setMapped]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [addId, setAddId]     = useState("");
+  const [busy, setBusy]       = useState(false);
+  const [err, setErr]         = useState(null);
+
+  const reload = () => {
+    setLoading(true);
+    return getClassSubjects(cls.id)
+      .then(r => setMapped(arrOf(r)))
+      .catch(() => setMapped([]))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [cls.id]);
+
+  const mappedIds  = new Set(mapped.map(s => Number(s.id)));
+  const available  = (allSubjects || []).filter(s => !mappedIds.has(Number(s.id)));
+
+  const addSubject = async () => {
+    if (!addId) return;
+    setBusy(true); setErr(null);
+    try { await mapClassSubject(cls.id, Number(addId)); setAddId(""); await reload(); }
+    catch (e) { setErr(e?.message || e?.error || "Could not add subject."); }
+    finally { setBusy(false); }
+  };
+  const removeSubject = async (s) => {
+    const warn = s.has_grades == 1 || s.has_grades === true || s.has_grades === "1";
+    if (!window.confirm(
+      `Remove "${s.name}" from ${cls.name}?` +
+      (warn ? `\n\nThis subject already has scores in this class — they will be permanently deleted for ALL terms, and it will disappear from this class's report cards and broadsheet.` : `\n\nIt will no longer appear in this class's grading, report cards or broadsheet.`) +
+      `\n\nThis cannot be undone.`)) return;
+    setBusy(true); setErr(null);
+    try { await unmapClassSubject(cls.id, Number(s.id)); await reload(); }
+    catch (e) { setErr(e?.message || e?.error || "Could not remove subject."); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`📖 Subjects — ${cls.name}`} onClose={busy ? () => {} : onClose} width={520}>
+      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+        {/* Add a subject to this class */}
+        <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+          <Sel label="Add subject to class" value={addId} onChange={setAddId}
+            options={[{value:"",label: available.length ? "Select subject…" : "All subjects already added"}, ...available.map(s=>({value:String(s.id),label:s.name}))]}
+            style={{ flex:1 }}/>
+          <Btn variant="primary" onClick={addSubject} disabled={busy || !addId}>+ Add</Btn>
+        </div>
+
+        {err && <div style={{ padding:"9px 12px", borderRadius:8, background:C.coralLight, color:"#991B1B", fontSize:12, fontWeight:500 }}>{err}</div>}
+
+        {/* Currently mapped subjects */}
+        <div style={{ border:`1px solid ${C.border}`, borderRadius:9, overflow:"hidden" }}>
+          <div style={{ background:"#F8FAFC", padding:"8px 12px", fontSize:11, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>
+            Offered subjects ({mapped.length})
+          </div>
+          {loading ? (
+            <div style={{ padding:"22px", textAlign:"center", fontSize:12, color:C.textMuted }}>Loading…</div>
+          ) : mapped.length === 0 ? (
+            <div style={{ padding:"22px", textAlign:"center", fontSize:12, color:C.textMuted }}>No subjects mapped to this class yet.</div>
+          ) : mapped.map(s => (
+            <div key={s.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 12px", borderTop:`1px solid ${C.border}` }}>
+              <div>
+                <span style={{ fontSize:13, fontWeight:600 }}>{s.name}</span>
+                {s.code && <span style={{ fontSize:10, color:C.textMuted, marginLeft:8 }}>{s.code}</span>}
+                {(s.has_grades == 1 || s.has_grades === true || s.has_grades === "1") &&
+                  <span style={{ fontSize:9, color:C.amber, marginLeft:8, fontWeight:700, textTransform:"uppercase" }}>has scores</span>}
+              </div>
+              <Btn size="sm" variant="danger" onClick={()=>removeSubject(s)} disabled={busy}>🗑 Unmap</Btn>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize:11, color:C.textMuted }}>
+          Unmapping a subject removes it from this class's curriculum and clears any of its scores in this class (all terms).
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
 const AcademicMgmt = () => {
   const [tab, setTab] = useState("classes");
   const [matModal, setMatModal] = useState(false);
@@ -5487,6 +5570,7 @@ const AcademicMgmt = () => {
   const [newSubject, setNewSubject] = useState({ name:"", code:"", department:"" });
   const [subjSaving, setSubjSaving] = useState(false);
   const [subjErr, setSubjErr] = useState(null);
+  const [manageClass, setManageClass] = useState(null);   // class whose subjects we're editing
 
   useEffect(() => {
     let cancelled = false;
@@ -5552,9 +5636,13 @@ const AcademicMgmt = () => {
               ) : (
               <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
                 {classList.map(cls=>(
-                  <div key={cls.id} style={{padding:"10px 12px",borderRadius:9,border:`1px solid ${C.border}`,background:"#F8FAFC",textAlign:"center"}}>
+                  <div key={cls.id} onClick={()=>setManageClass(cls)} title="Manage subjects for this class"
+                    style={{padding:"10px 12px",borderRadius:9,border:`1px solid ${C.border}`,background:"#F8FAFC",textAlign:"center",cursor:"pointer",transition:"box-shadow .15s,transform .15s"}}
+                    onMouseEnter={e=>{e.currentTarget.style.boxShadow="0 4px 14px rgba(0,0,0,.08)";e.currentTarget.style.transform="translateY(-1px)";}}
+                    onMouseLeave={e=>{e.currentTarget.style.boxShadow="none";e.currentTarget.style.transform="translateY(0)";}}>
                     <div style={{fontSize:12,fontWeight:700}}>{cls.name}</div>
                     <div style={{fontSize:10,color:C.textMuted,marginTop:3}}>Capacity {cls.capacity||40}</div>
+                    <div style={{fontSize:10,color:C.accentDark,marginTop:4,fontWeight:600}}>📖 Manage subjects</div>
                   </div>
                 ))}
               </div>
@@ -5666,6 +5754,10 @@ const AcademicMgmt = () => {
             </div>
           </div>
         </Modal>
+      )}
+
+      {manageClass && (
+        <ClassSubjectsModal cls={manageClass} allSubjects={subjectRows} onClose={()=>setManageClass(null)}/>
       )}
 
       {matModal&&<Modal title="📎 Upload Study Material" onClose={()=>setMatModal(false)} width={500}>

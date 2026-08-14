@@ -417,6 +417,53 @@ try {
         DB::run('UPDATE subjects SET deleted_at=NOW() WHERE id=? AND school_id=?', [$id, (int)$u['school_id']]);
         respond(['deleted' => true]);
 
+    // ── Class ⇄ subject mapping (curriculum per class) ────────────────────────
+    } elseif ($path === '/api/v1/class-subjects' && $method === 'GET') {
+        authGuard();
+        $classId = (int)($_GET['class_id'] ?? 0);
+        if (!$classId) respond(null, 422, 'class_id required');
+        respond(DB::query(
+            'SELECT sub.id, sub.name, sub.code,
+                    EXISTS(SELECT 1 FROM grades g JOIN students s ON s.id = g.student_id
+                           WHERE s.class_id = cs.class_id AND g.subject_id = sub.id) AS has_grades
+             FROM class_subjects cs JOIN subjects sub ON sub.id = cs.subject_id
+             WHERE cs.class_id = ? AND sub.deleted_at IS NULL
+             ORDER BY sub.name',
+            [$classId]));
+
+    } elseif ($path === '/api/v1/class-subjects' && $method === 'POST') {
+        $u = authGuard();
+        if (!in_array($u['role'] ?? '', ['super_admin', 'school_admin'], true))
+            respond(null, 403, 'Only an administrator can change class subjects.');
+        $b = body();
+        $classId   = (int)($b['class_id'] ?? 0);
+        $subjectId = (int)($b['subject_id'] ?? 0);
+        if (!$classId || !$subjectId) respond(null, 422, 'class_id and subject_id required');
+        $sid = (int)$u['school_id'];
+        if (!DB::one('SELECT id FROM classes  WHERE id=? AND school_id=?', [$classId, $sid])
+         || !DB::one('SELECT id FROM subjects WHERE id=? AND school_id=? AND deleted_at IS NULL', [$subjectId, $sid]))
+            respond(null, 404, 'Class or subject not found.');
+        if (!DB::one('SELECT id FROM class_subjects WHERE class_id=? AND subject_id=?', [$classId, $subjectId]))
+            DB::run('INSERT INTO class_subjects (class_id, subject_id) VALUES (?,?)', [$classId, $subjectId]);
+        respond(['mapped' => true]);
+
+    } elseif ($path === '/api/v1/class-subjects' && $method === 'DELETE') {
+        $u = authGuard();
+        if (!in_array($u['role'] ?? '', ['super_admin', 'school_admin'], true))
+            respond(null, 403, 'Only an administrator can change class subjects.');
+        $classId   = (int)($_GET['class_id'] ?? 0);
+        $subjectId = (int)($_GET['subject_id'] ?? 0);
+        if (!$classId || !$subjectId) respond(null, 422, 'class_id and subject_id required');
+        if (!DB::one('SELECT id FROM classes WHERE id=? AND school_id=?', [$classId, (int)$u['school_id']]))
+            respond(null, 404, 'Class not found.');
+        // Unmapping removes the subject from the class curriculum AND clears any
+        // scores it has in that class (all terms), so it disappears from the
+        // class's report cards and broadsheet entirely.
+        $grades = DB::run('DELETE g FROM grades g JOIN students s ON s.id = g.student_id
+                           WHERE s.class_id = ? AND g.subject_id = ?', [$classId, $subjectId]);
+        DB::run('DELETE FROM class_subjects WHERE class_id=? AND subject_id=?', [$classId, $subjectId]);
+        respond(['unmapped' => true, 'grades_deleted' => $grades]);
+
     } elseif ($path === '/api/v1/terms' && $method === 'GET') {
         respond(DB::query(
             'SELECT t.*, ay.name AS year_name
