@@ -704,6 +704,22 @@ class GradeController {
         } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
     }
 
+    // Admin-only: wipe every grade for one class + subject + term. Afterwards the
+    // subject no longer appears on that class's report cards or broadsheet.
+    public static function resetScores(array $user): void {
+        Perm::assertAdmin($user);
+        $classId   = (int)($_GET['class_id']   ?? 0);
+        $subjectId = (int)($_GET['subject_id'] ?? 0);
+        $termId    = (int)($_GET['term_id']    ?? 0);
+        if (!$classId || !$subjectId || !$termId) respond(null, 422, 'class_id, subject_id and term_id required');
+        $deleted = DB::run(
+            'DELETE g FROM grades g JOIN students s ON s.id = g.student_id
+             WHERE s.class_id = ? AND g.subject_id = ? AND g.term_id = ?',
+            [$classId, $subjectId, $termId]
+        );
+        respond(['deleted' => $deleted]);
+    }
+
     public static function behaviour(array $user): void {
         $classId = (int)($_GET['class_id']??0);
         $termId  = (int)($_GET['term_id']??0);

@@ -94,6 +94,8 @@ export const getCaTypesAll  = () => api.get('/ca-types/all');
 export const saveCaTypes    = components => api.post('/ca-types/save', { components });
 export const getGrades      = (params = {}) => api.get('/grades', { params });
 export const submitGrades   = grades => api.post('/grades/bulk', { grades });
+export const resetScores    = (class_id, subject_id, term_id) =>
+  api.delete('/grades/reset', { params: { class_id, subject_id, term_id } });
 export const getReportCard  = (student_id, term_id = 2) =>
   api.get('/grades/report-card', { params: { student_id, term_id } });
 export const getBroadsheet  = (class_id, term_id) =>

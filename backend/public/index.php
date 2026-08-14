@@ -199,6 +199,9 @@ try {
     } elseif ($path === '/api/v1/grades/bulk' && $method === 'POST') {
         GradeController::bulk(authGuard());
 
+    } elseif ($path === '/api/v1/grades/reset' && $method === 'DELETE') {
+        GradeController::resetScores(authGuard());
+
     } elseif ($path === '/api/v1/grades/report-card' && $method === 'GET') {
         GradeController::reportCard(authGuard());
 

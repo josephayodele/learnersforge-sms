@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
          createSubject, deleteSubject,
-         getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, getBehaviour, saveBehaviour, getComments, saveComments,
+         getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, resetScores, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe, getMyAssignments,
          getStaff, createStaff, updateStaff, getStaffMember, importStaff, getStaffAssignments, saveStaffAssignments, deleteStaff,
@@ -2297,6 +2297,7 @@ const Grades = () => {
   const [showCAConfig,  setShowCAConfig]  = useState(false);
   const [toast,         setToast]         = useState("");
   const [saving,        setSaving]        = useState(false);
+  const [resetting,     setResetting]     = useState(false);
 
   // ── Reference data ──
   const [studentList,   setStudentList]   = useState([]);   // all students (report-card / cumulative pickers)
@@ -2588,6 +2589,21 @@ const Grades = () => {
     } catch (e) { flash("Save failed: " + (e?.message || "error")); }
     finally { setSaving(false); }
   };
+  // Admin-only: clear every score for the selected class + subject + term, so the
+  // subject drops off that class's report cards and broadsheet.
+  const handleResetScores = async () => {
+    if (!entClass || !entSubject || !entTerm) { flash("Select a class, subject and term first."); return; }
+    const subjName = (subjectList.find(s => String(s.id) === String(entSubject))?.name) || "this subject";
+    const className = (classList.find(c => String(c.id) === String(entClass))?.name) || "this class";
+    if (!window.confirm(`Reset ALL scores for ${subjName} in ${className} (this term)?\n\nThis permanently deletes every CA and exam score entered for this subject in this class, and removes the subject from the class's report cards and broadsheet. This cannot be undone.`)) return;
+    setResetting(true);
+    try {
+      const res = await resetScores(Number(entClass), Number(entSubject), Number(entTerm));
+      setScores({});
+      flash(`Reset done — ${res?.data?.deleted ?? res?.deleted ?? 0} record(s) cleared.`);
+    } catch (e) { flash(e?.message || e?.error || "Reset failed."); }
+    finally { setResetting(false); }
+  };
   const isEntryTab = tab === "scores" || tab === "psychomotor" || tab === "affective";
 
   return (
@@ -2596,6 +2612,7 @@ const Grades = () => {
         <Tabs tabs={[{id:"scores",label:"📊 Scores"},{id:"psychomotor",label:"🏃 Psychomotor"},{id:"affective",label:"💙 Affective"},{id:"attendance",label:"🗓 Attendance"},{id:"broadsheet",label:"📋 Broadsheet"},{id:"cumulative",label:"📈 Cumulative"},{id:"reportcard",label:"🖨 Report Card"},{id:"remarks",label:"⚙️ Remark Settings"}]} active={tab} onChange={setTab}/>
         <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
           {tab==="scores" && <Btn variant="secondary" size="sm" onClick={openCAConfig}>⚙️ CA Settings</Btn>}
+          {tab==="scores" && !notAdmin && <Btn variant="danger" size="sm" onClick={handleResetScores} disabled={resetting || !entClass || !entSubject || !entTerm}>{resetting ? "Resetting…" : "🗑 Reset Scores"}</Btn>}
           {isEntryTab && <Btn variant="primary" size="sm" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "💾 Save"}</Btn>}
         </div>
       </div>
