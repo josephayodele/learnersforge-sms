@@ -835,11 +835,15 @@ class GradeController {
             foreach ($subs as $su => $v) { $subjTotals[$su][$st] = $v['ca'] + $v['exam']; }
         }
 
-        // This student's per-subject row with position + class hi/lo.
+        // This student's per-subject rows — only subjects they actually offer
+        // (total > 0; a missing record or a 0 means "not offered", exactly as the
+        // broadsheet treats it). Per-subject position/hi/lo count only students who
+        // also offer that subject.
         $subjects = [];
         foreach (($agg[$studentId] ?? []) as $su => $v) {
             $total = $v['ca'] + $v['exam'];
-            $all   = array_values($subjTotals[$su]);
+            if ($total <= 0) continue;
+            $all = array_values(array_filter($subjTotals[$su], fn($t) => $t > 0));
             $position = 1; foreach ($all as $t) { if ($t > $total) $position++; }
             $subjects[] = [
                 'subject'  => $subjectNames[$su],
@@ -848,33 +852,36 @@ class GradeController {
                 'total'    => round($total, 2),
                 'grade'    => self::gradeOf($total), // subject total is out of 100 ⇒ already a %
                 'position' => $position,
-                'highest'  => round(max($all), 2),
-                'lowest'   => round(min($all), 2),
+                'highest'  => $all ? round(max($all), 2) : round($total, 2),
+                'lowest'   => $all ? round(min($all), 2) : round($total, 2),
             ];
         }
         usort($subjects, fn($a,$b) => strcmp($a['subject'], $b['subject']));
 
-        // Overall: sum each student's subject totals, rank, and express hi/lo as %.
-        $distinctSubjects = count($subjTotals);
-        $possibleMax = $distinctSubjects * 100;
-        $overallTotals = [];
+        // Overall — identical rule to the broadsheet: each student's percentage is
+        // total ÷ (subjects THEY offer × 100). Non-offered subjects (0/no score) are
+        // excluded from both the sum and the denominator. Rank by percentage so
+        // students offering different numbers of subjects compare fairly.
+        $myOverall = 0.0; $myOffered = 0;
+        $pctByStudent = [];
         foreach ($agg as $st => $subs) {
-            $sum = 0.0; foreach ($subs as $v) { $sum += $v['ca'] + $v['exam']; }
-            $overallTotals[$st] = $sum;
+            $sum = 0.0; $offered = 0;
+            foreach ($subs as $v) { $t = $v['ca'] + $v['exam']; if ($t > 0) { $sum += $t; $offered++; } }
+            $pctByStudent[$st] = round($offered > 0 ? ($sum / ($offered * 100)) * 100 : 0, 2);
+            if ((int)$st === $studentId) { $myOverall = $sum; $myOffered = $offered; }
         }
-        $myOverall  = $overallTotals[$studentId] ?? 0.0;
-        $overallPct = $possibleMax > 0 ? ($myOverall / $possibleMax) * 100 : 0;
-        $overallPos = 1; foreach ($overallTotals as $t) { if ($t > $myOverall) $overallPos++; }
-        $classHigh  = $overallTotals ? max($overallTotals) : 0;
-        $classLow   = $overallTotals ? min($overallTotals) : 0;
+        $overallPct = $pctByStudent[$studentId] ?? 0;
+        $overallPos = 1; foreach ($pctByStudent as $p) { if ($p > $overallPct) $overallPos++; }
+        $classHigh  = $pctByStudent ? max($pctByStudent) : 0;
+        $classLow   = $pctByStudent ? min($pctByStudent) : 0;
         $overall = [
             'total'         => round($myOverall, 2),
-            'max'           => $possibleMax,
+            'max'           => $myOffered * 100,
             'percentage'    => round($overallPct, 2),
             'grade'         => self::gradeOf($overallPct),
             'position'      => $overallPos,
-            'class_highest' => $possibleMax > 0 ? round(($classHigh / $possibleMax) * 100, 2) : 0,
-            'class_lowest'  => $possibleMax > 0 ? round(($classLow  / $possibleMax) * 100, 2) : 0,
+            'class_highest' => round($classHigh, 2),
+            'class_lowest'  => round($classLow, 2),
         ];
 
         $classSize = (int)(DB::one('SELECT COUNT(*) c FROM students WHERE class_id=? AND deleted_at IS NULL',[$classId])['c'] ?? 0);
