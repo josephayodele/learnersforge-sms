@@ -361,6 +361,18 @@ try {
     } elseif ($path === '/api/v1/admissions' && $id && $method === 'PUT') {
         AdmissionController::update(authGuard(), $id);
 
+    // ── Public branding (no auth) — school name + current session for the login screen ──
+    } elseif ($path === '/api/v1/public/school-info' && $method === 'GET') {
+        $school = DB::one('SELECT name, motto, logo_url FROM schools ORDER BY id LIMIT 1');
+        $year   = DB::one('SELECT name FROM academic_years WHERE is_current = 1 ORDER BY id DESC LIMIT 1')
+               ?? DB::one('SELECT name FROM academic_years ORDER BY id DESC LIMIT 1');
+        respond([
+            'name'     => $school['name']     ?? null,
+            'motto'    => $school['motto']    ?? null,
+            'logo_url' => $school['logo_url'] ?? null,
+            'session'  => $year['name']       ?? null,
+        ]);
+
     // ── Settings (school profile / branding) ───────────────────────────────────
     } elseif ($path === '/api/v1/settings/school' && $method === 'GET') {
         SettingsController::getSchool(authGuard());

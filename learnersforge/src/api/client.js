@@ -48,6 +48,9 @@ export const getMe  = () => api.get('/auth/me');
 // The logged-in user's teaching scope (is_admin, class_ids, teaching pairs, …).
 export const getMyAssignments = () => api.get('/me/assignments');
 
+// Public school branding (name + current session) for the login screen — no auth.
+export const getPublicSchoolInfo = () => api.get('/public/school-info').then(r => r?.data ?? r);
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 export const getDashboard = () => api.get('/dashboard');
 

@@ -10,7 +10,7 @@ import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
          getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
          getExamSubmissions, getSubmission, gradeSubmission,
-         getMyExams, getMyExam, submitMyExam, getMyResults, login as apiLogin } from "./api/client";
+         getMyExams, getMyExam, submitMyExam, getMyResults, getPublicSchoolInfo, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -6843,6 +6843,9 @@ const Login = ({ onSuccess }) => {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [school, setSchool] = useState(null);   // public branding for the footer
+
+  useEffect(() => { getPublicSchoolInfo().then(setSchool).catch(() => {}); }, []);
 
   const submit = async (e) => {
     if (e) e.preventDefault();
@@ -6888,7 +6891,7 @@ const Login = ({ onSuccess }) => {
         </Btn>
 
         <div style={{marginTop:16,textAlign:"center",fontSize:11,color:C.textMuted}}>
-          Greenfield Academy · 2025/2026 Session
+          {(school?.name || "LearnersForge")}{school?.session ? ` · ${school.session} Session` : ""}
         </div>
       </form>
     </div>
