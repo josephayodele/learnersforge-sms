@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
          createSubject, deleteSubject, getClassSubjects, mapClassSubject, unmapClassSubject,
+         getAcademicYears, createAcademicYear, setCurrentAcademicYear,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, resetScores, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe, getMyAssignments,
@@ -5046,6 +5047,81 @@ const fileToLogoDataUrl = (file, max = 260) => new Promise((resolve, reject) => 
   reader.readAsDataURL(file);
 });
 
+// Academic sessions (years) + terms. A school needs one before classes/grades can
+// be created. Creating a session auto-generates its three terms.
+const AcademicSessions = () => {
+  const [years, setYears]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm]     = useState({ name:"", start_date:"", end_date:"", is_current:true });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr]       = useState(null);
+  const [msg, setMsg]       = useState(null);
+
+  const reload = () => { setLoading(true); return getAcademicYears().then(r => setYears(arrOf(r))).catch(() => setYears([])).finally(() => setLoading(false)); };
+  useEffect(() => { reload(); }, []);
+
+  const set = k => v => setForm(p => ({ ...p, [k]: v }));
+  const create = async () => {
+    if (!form.name.trim() || !form.start_date || !form.end_date) { setErr("Enter a session name, start date and end date."); return; }
+    setSaving(true); setErr(null); setMsg(null);
+    try {
+      await createAcademicYear({ ...form, name: form.name.trim() });
+      setForm({ name:"", start_date:"", end_date:"", is_current:true });
+      setMsg("Session created (with its three terms).");
+      await reload();
+      setTimeout(() => setMsg(null), 3000);
+    } catch (e) { setErr(e?.message || e?.error || "Could not create session."); }
+    finally { setSaving(false); }
+  };
+  const makeCurrent = async (y) => {
+    try { await setCurrentAcademicYear(y.id); await reload(); }
+    catch (e) { setErr(e?.message || "Could not set current session."); }
+  };
+
+  return (
+    <Card>
+      <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>📅 Academic Sessions</div>
+      <div style={{ fontSize:11, color:C.textMuted, marginBottom:14 }}>A school needs a current session before you can add classes or enter results. Creating a session automatically sets up its three terms.</div>
+
+      {/* Existing sessions */}
+      <div style={{ border:`1px solid ${C.border}`, borderRadius:9, overflow:"hidden", marginBottom:16 }}>
+        <div style={{ background:"#F8FAFC", padding:"8px 12px", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>Sessions</div>
+        {loading ? (
+          <div style={{ padding:"18px", textAlign:"center", fontSize:12, color:C.textMuted }}>Loading…</div>
+        ) : years.length === 0 ? (
+          <div style={{ padding:"18px", textAlign:"center", fontSize:12, color:C.textMuted }}>No academic session yet — create one below.</div>
+        ) : years.map(y => (
+          <div key={y.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, padding:"10px 12px", borderTop:`1px solid ${C.border}` }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700 }}>{y.name} {Number(y.is_current)===1 && <Badge color="green" size="sm">Current</Badge>}</div>
+              <div style={{ fontSize:10, color:C.textMuted, marginTop:2 }}>{y.start_date} → {y.end_date} · {(y.terms||[]).length} terms{(y.terms||[]).length ? ` (${y.terms.map(t=>t.name).join(", ")})` : ""}</div>
+            </div>
+            {Number(y.is_current)!==1 && <Btn size="sm" variant="secondary" onClick={()=>makeCurrent(y)}>Set current</Btn>}
+          </div>
+        ))}
+      </div>
+
+      {/* Create session */}
+      <div style={{ fontSize:12, fontWeight:700, color:C.textMid, marginBottom:8 }}>Add a session</div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+        <Input label="Session name" value={form.name} onChange={set("name")} placeholder="e.g. 2025/2026" style={{ gridColumn:"1 / -1" }}/>
+        <Input label="Start date" value={form.start_date} onChange={set("start_date")} type="date"/>
+        <Input label="End date"   value={form.end_date}   onChange={set("end_date")}   type="date"/>
+      </div>
+      <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:10, fontSize:12, color:C.textMid, cursor:"pointer" }}>
+        <input type="checkbox" checked={form.is_current} onChange={e=>set("is_current")(e.target.checked)} style={{ width:15, height:15 }}/>
+        Make this the current session
+      </label>
+
+      {err && <div style={{ marginTop:12, padding:"9px 12px", borderRadius:8, background:C.coralLight, color:"#991B1B", fontSize:12, fontWeight:600 }}>{err}</div>}
+      {msg && <div style={{ marginTop:12, padding:"9px 12px", borderRadius:8, background:C.accentLight, color:C.accentDark, fontSize:12, fontWeight:600 }}>{msg}</div>}
+      <div style={{ marginTop:14 }}>
+        <Btn variant="primary" onClick={create} disabled={saving}>{saving ? "Creating…" : "➕ Create Session"}</Btn>
+      </div>
+    </Card>
+  );
+};
+
 const Settings = () => {
   const empty = { name:"", code:"", address:"", phone:"", email:"", motto:"", term_system:"term", logo_url:"" };
   const [form,    setForm]    = useState(empty);
@@ -5093,6 +5169,7 @@ const Settings = () => {
           <button key={l} style={{ padding:"9px 12px", borderRadius:8, border:"none", background:i===0?C.accentLight:"transparent", color:i===0?C.accentDark:C.textMid, textAlign:"left", fontSize:12, fontWeight:i===0?600:400, cursor:"pointer", display:"flex", alignItems:"center", gap:7 }}><span>{ic}</span>{l}</button>
         ))}
       </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
       <Card>
         <div style={{ fontSize:13, fontWeight:700, marginBottom:16 }}>School Information</div>
 
@@ -5131,6 +5208,8 @@ const Settings = () => {
           {saved && <span style={{ fontSize:12, color:C.accentDark, fontWeight:600 }}>✅ Saved!</span>}
         </div>
       </Card>
+      <AcademicSessions/>
+      </div>
     </div>
   );
 };

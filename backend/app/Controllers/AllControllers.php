@@ -1737,6 +1737,70 @@ class SettingsController {
     }
 }
 
+// ─── AcademicController ───────────────────────────────────────────────────────
+// Academic sessions (years) and their terms. A school needs at least one session
+// before classes, grades or attendance can be created.
+class AcademicController {
+    public static function listYears(array $user): void {
+        $sid = (int)$user['school_id'];
+        $years = DB::query('SELECT id,name,start_date,end_date,is_current FROM academic_years WHERE school_id=? AND deleted_at IS NULL ORDER BY is_current DESC, id DESC', [$sid]);
+        foreach ($years as &$y) {
+            $y['terms'] = DB::query('SELECT id,name,start_date,end_date,is_current FROM terms WHERE academic_year_id=? AND deleted_at IS NULL ORDER BY id', [(int)$y['id']]);
+        }
+        respond($years);
+    }
+
+    // Create a session and (by default) auto-generate its three terms, splitting
+    // the date range into thirds. If marked current, its first term is current too.
+    public static function createYear(array $user): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id'];
+        $b   = body();
+        $name  = trim((string)($b['name'] ?? ''));
+        $start = trim((string)($b['start_date'] ?? ''));
+        $end   = trim((string)($b['end_date'] ?? ''));
+        if ($name === '' || $start === '' || $end === '') respond(null, 422, 'Session name, start date and end date are required.');
+        if (strtotime($start) === false || strtotime($end) === false || strtotime($end) <= strtotime($start))
+            respond(null, 422, 'Provide a valid start date and a later end date.');
+        if (DB::one('SELECT id FROM academic_years WHERE school_id=? AND name=? AND deleted_at IS NULL', [$sid, $name]))
+            respond(null, 409, 'A session named "'.$name.'" already exists.');
+        $makeCurrent = !empty($b['is_current']);
+        $makeTerms   = array_key_exists('make_terms', $b) ? !empty($b['make_terms']) : true;
+
+        DB::conn()->beginTransaction();
+        try {
+            if ($makeCurrent) DB::run('UPDATE academic_years SET is_current=0 WHERE school_id=?', [$sid]);
+            $yearId = DB::exec('INSERT INTO academic_years (school_id,name,start_date,end_date,is_current) VALUES (?,?,?,?,?)',
+                [$sid, $name, $start, $end, $makeCurrent ? 1 : 0]);
+
+            if ($makeTerms) {
+                $s = new DateTime($start); $e = new DateTime($end);
+                $seg = max(1, intdiv((int)$s->diff($e)->days, 3));
+                $labels = ['1st Term', '2nd Term', '3rd Term'];
+                for ($i = 0; $i < 3; $i++) {
+                    $ts = (clone $s)->modify('+' . ($seg * $i) . ' days');
+                    $te = ($i === 2) ? clone $e : (clone $s)->modify('+' . (($seg * ($i + 1)) - 1) . ' days');
+                    DB::run('INSERT INTO terms (academic_year_id,name,start_date,end_date,is_current) VALUES (?,?,?,?,?)',
+                        [$yearId, $labels[$i], $ts->format('Y-m-d'), $te->format('Y-m-d'), ($makeCurrent && $i === 0) ? 1 : 0]);
+                }
+            }
+            DB::conn()->commit();
+        } catch (Throwable $ex) { DB::conn()->rollBack(); throw $ex; }
+        respond(['id' => $yearId], 201, 'Academic session created');
+    }
+
+    // Mark a session (and unset the others) as the current one.
+    public static function setCurrentYear(array $user, int $id): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id'];
+        if (!DB::one('SELECT id FROM academic_years WHERE id=? AND school_id=? AND deleted_at IS NULL', [$id, $sid]))
+            respond(null, 404, 'Session not found.');
+        DB::run('UPDATE academic_years SET is_current=0 WHERE school_id=?', [$sid]);
+        DB::run('UPDATE academic_years SET is_current=1 WHERE id=?', [$id]);
+        respond(['is_current' => $id]);
+    }
+}
+
 // ─── AIController ─────────────────────────────────────────────────────────────
 // Server-side proxy to z.ai (Zhipu GLM). The API key lives only in config/ai.php
 // (git-ignored, created on the server) so it is never exposed to the browser.

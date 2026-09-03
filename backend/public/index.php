@@ -486,6 +486,16 @@ try {
             []
         ));
 
+    // ── Academic sessions (years) + terms ──────────────────────────────────────
+    } elseif ($path === '/api/v1/academic-years' && !$id && $method === 'GET') {
+        AcademicController::listYears(authGuard());
+
+    } elseif ($path === '/api/v1/academic-years' && $method === 'POST') {
+        AcademicController::createYear(authGuard());
+
+    } elseif ($path === '/api/v1/academic-years' && $id && $method === 'PUT') {
+        AcademicController::setCurrentYear(authGuard(), $id);
+
     // ── 404 ───────────────────────────────────────────────────────────────────
     } else {
         respond(null, 404, "Endpoint not found: $method $path");

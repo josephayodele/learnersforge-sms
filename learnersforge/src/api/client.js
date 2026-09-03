@@ -203,4 +203,9 @@ export const mapClassSubject   = (class_id, subject_id) => api.post('/class-subj
 export const unmapClassSubject = (class_id, subject_id) => api.delete('/class-subjects', { params: { class_id, subject_id } });
 export const getTerms    = () => api.get('/terms');
 
+// ── Academic sessions (years) + terms ───────────────────────────────────────────
+export const getAcademicYears     = () => api.get('/academic-years');
+export const createAcademicYear   = data => api.post('/academic-years', data);
+export const setCurrentAcademicYear = id => api.put(`/academic-years/${id}`, {});
+
 export default api;
