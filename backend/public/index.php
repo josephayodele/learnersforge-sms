@@ -400,11 +400,14 @@ try {
         if (!$ay) respond(null, 422, 'No academic year is set up for this school.');
         $dup = DB::one('SELECT id FROM classes WHERE school_id=? AND name=? AND deleted_at IS NULL', [(int)$u['school_id'], $name]);
         if ($dup) respond(null, 409, 'A class named "' . $name . '" already exists.');
+        // Clamp to column widths so long names (e.g. "BASIC 1") never overflow the
+        // small form/level/arm/name columns and 500 under MySQL strict mode.
+        $clamp = fn($v, $n) => ($v === null || $v === '') ? null : mb_substr((string)$v, 0, $n);
         $newId = DB::exec(
             'INSERT INTO classes (school_id, academic_year_id, name, level, form, arm, capacity) VALUES (?,?,?,?,?,?,?)',
-            [(int)$u['school_id'], (int)$ay['id'], $name, $b['level'] ?? null, $b['form'] ?? null, $b['arm'] ?? null, (int)($b['capacity'] ?? 40)]
+            [(int)$u['school_id'], (int)$ay['id'], $clamp($name, 20), $clamp($b['level'] ?? null, 10), $clamp($b['form'] ?? null, 5), $clamp($b['arm'] ?? null, 5), (int)($b['capacity'] ?? 40)]
         );
-        respond(['id' => $newId, 'name' => $name], 201, 'Class created');
+        respond(['id' => $newId, 'name' => $clamp($name, 20)], 201, 'Class created');
 
     } elseif ($path === '/api/v1/subjects' && !$id && $method === 'GET') {
         respond(DB::query(
