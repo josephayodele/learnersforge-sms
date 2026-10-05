@@ -184,4 +184,10 @@ code {
   .report-sheet > div { margin-bottom: 6px !important; }
   .report-sheet table { margin-bottom: 6px !important; }
   .report-sheet div { min-height: 0 !important; }
+
+  /* ID cards / certificates / admit cards: lay out across the page, keep each
+     card whole, and print the background colours exactly. */
+  .idprint { display: flex !important; flex-wrap: wrap; gap: 8mm; align-content: flex-start; }
+  .id-card { page-break-inside: avoid; break-inside: avoid; }
+  .idprint, .idprint * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 }

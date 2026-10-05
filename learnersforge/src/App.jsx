@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
+import QRCode from "qrcode";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
          createSubject, deleteSubject, getClassSubjects, mapClassSubject, unmapClassSubject,
@@ -5998,141 +5999,328 @@ const Transport = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 5. CERTIFICATES & ID CARDS
 // ═══════════════════════════════════════════════════════════════════════════════
+// Real, data-driven ID cards / certificates / admit cards. Uses the live school
+// profile (name, logo, address, phone, email) + the selected class's students,
+// with locally-generated QR codes. No dummy data.
+const ID_DESIGNS = [
+  { id:"wave",    label:"Wave (portrait, 2-sided)" },
+  { id:"classic", label:"Classic (landscape)" },
+];
 const Certificates = () => {
   const [tab, setTab] = useState("idcards");
-  const [preview, setPreview] = useState(null);
+  const [classes, setClasses] = useState([]);
+  const [classId, setClassId] = useState("");
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [school, setSchool] = useState(null);
+  const [session, setSession] = useState("");
+  const [design, setDesign] = useState("wave");
+  const [selected, setSelected] = useState(() => new Set());
+  const [qrMap, setQrMap] = useState({});
+  // certificates / admit-card options
+  const [certType, setCertType] = useState("Achievement");
+  const [admit, setAdmit] = useState({ title:"", date:"", time:"", venue:"" });
+  // printing
+  const [printList, setPrintList] = useState([]);
+  const [printKind, setPrintKind] = useState("idcard");
+  const [printName, setPrintName] = useState("ID Cards");
+  const [pendingPrint, setPendingPrint] = useState(false);
 
-  const IDCardPreview = ({ student, type }) => (
-    <div style={{width:320,height:190,borderRadius:14,background:`linear-gradient(135deg,${C.navy} 0%,${C.navyMid} 100%)`,padding:"16px 18px",display:"flex",flexDirection:"column",justifyContent:"space-between",boxShadow:"0 8px 28px rgba(0,0,0,.25)",position:"relative",overflow:"hidden"}}>
-      <div style={{position:"absolute",top:-20,right:-20,width:100,height:100,borderRadius:"50%",background:C.accent+"18"}}/>
-      <div style={{position:"absolute",bottom:-30,left:-10,width:80,height:80,borderRadius:"50%",background:C.accent+"12"}}/>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-        <div><div style={{color:C.accent,fontSize:10,fontWeight:700,letterSpacing:"1px"}}>GREENFIELD ACADEMY</div><div style={{color:"#8DA4C0",fontSize:9,marginTop:1}}>LAGOS · NIGERIA</div></div>
-        <div style={{background:C.accent,borderRadius:6,padding:"3px 8px",fontSize:9,fontWeight:700,color:C.navy}}>{type.toUpperCase()}</div>
-      </div>
-      <div style={{display:"flex",gap:12,alignItems:"center"}}>
-        <div style={{width:44,height:44,borderRadius:"50%",background:C.accent+"33",border:`2px solid ${C.accent}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:C.accent,flexShrink:0}}>{student?.avatar||"ST"}</div>
-        <div>
-          <div style={{color:"#fff",fontSize:13,fontWeight:700}}>{student?.name||"Student Name"}</div>
-          <div style={{color:"#8DA4C0",fontSize:10,marginTop:2}}>{student?.class||"Class"}</div>
-          <div style={{color:"#8DA4C0",fontSize:10,marginTop:1}}>ID: {student?.id||"ST001"}</div>
+  useEffect(() => {
+    getClasses().then(r=>{ const l=arrOf(r); setClasses(l); if(l[0]) setClassId(String(l[0].id)); }).catch(()=>{});
+    getSchoolSettings().then(r=> setSchool(r?.data ?? r)).catch(()=>{});
+    getPublicSchoolInfo().then(i=> setSession(i?.session||"")).catch(()=>{});
+  }, []);
+
+  useEffect(() => {
+    if(!classId){ setStudents([]); return; }
+    let live=true; setLoading(true); setSelected(new Set());
+    getStudents({ class_id:classId, per_page:300 })
+      .then(r=>{ if(live) setStudents(arrOf(r,"students").map(normStudent)); })
+      .catch(()=>{ if(live) setStudents([]); })
+      .finally(()=>{ if(live) setLoading(false); });
+    return ()=>{ live=false; };
+  }, [classId]);
+
+  // Generate a QR per student (local, offline — encodes school · name · ID).
+  useEffect(() => {
+    let live=true;
+    (async()=>{
+      const map={};
+      for(const s of students){
+        const sid = s.student_id || s.admission_number || s.id;
+        try { map[s.id] = await QRCode.toDataURL(`${school?.name||"School"} | ${s.name} | ID:${sid}`, { margin:1, width:140, color:{ dark:"#0D1B2A", light:"#ffffff" } }); } catch { /* noop */ }
+      }
+      if(live) setQrMap(map);
+    })();
+    return ()=>{ live=false; };
+  }, [students, school?.name]);
+
+  useEffect(() => { if(pendingPrint && printList.length){ printSheet(printName); setPendingPrint(false); } }, [pendingPrint, printList, printName]);
+
+  const className = classes.find(c=>String(c.id)===String(classId))?.name || "";
+  const toggle = id => setSelected(p=>{ const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; });
+  const allSelected = students.length>0 && students.every(s=>selected.has(s.id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(students.map(s=>s.id)));
+  const selectedStudents = students.filter(s=>selected.has(s.id));
+  const doPrint = (kind, list, name) => { if(!list.length) return; setPrintKind(kind); setPrintList(list); setPrintName(name); setPendingPrint(true); };
+
+  const sidOf = s => s.student_id || s.admission_number || s.id;
+  const schoolName = (school?.name || "School Name").toUpperCase();
+
+  // ── Card designs ──
+  const WaveFront = ({ s }) => (
+    <div className="id-card" style={{ position:"relative", width:230, height:362, background:"#fff", borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:"0 6px 20px rgba(0,0,0,.12)", fontFamily:"Sora,sans-serif", flexShrink:0 }}>
+      <svg viewBox="0 0 230 70" width="230" height="70" style={{ position:"absolute", top:0, left:0 }}>
+        <path d="M0,0 L230,0 L230,34 C150,66 70,14 0,46 Z" fill={C.navy}/>
+        <path d="M0,0 L230,0 L230,26 C150,56 70,6 0,36 Z" fill={C.accent} opacity="0.9"/>
+      </svg>
+      <div style={{ position:"relative", padding:"9px 10px 0", display:"flex", alignItems:"center", justifyContent:"center", gap:7 }}>
+        {school?.logo_url ? <img src={school.logo_url} alt="" style={{ height:34, width:34, objectFit:"contain" }}/> : <div style={{ height:30, width:30, borderRadius:6, background:"#ffffff33", border:"1px solid #ffffff66" }}/>}
+        <div style={{ textAlign:"left", maxWidth:150 }}>
+          <div style={{ fontSize:10.5, fontWeight:800, color:"#fff", lineHeight:1.05 }}>{schoolName}</div>
+          {school?.address && <div style={{ fontSize:7, color:"#E8F6FF" }}>{school.address}</div>}
         </div>
       </div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{color:"#8DA4C0",fontSize:9}}>Valid: 2025/2026 Academic Session</div>
-        <div style={{background:C.accent+"22",borderRadius:4,padding:"2px 7px",color:C.accent,fontSize:9,fontWeight:700}}>OFFICIAL</div>
+      <div style={{ textAlign:"center", marginTop:8 }}>
+        <span style={{ background:C.coral, color:"#fff", fontSize:9, fontWeight:800, letterSpacing:".6px", padding:"2px 12px", borderRadius:10 }}>IDENTITY CARD</span>
+      </div>
+      <div style={{ display:"flex", justifyContent:"center", marginTop:9 }}>
+        <div style={{ width:84, height:96, borderRadius:8, border:`2px solid ${C.navy}`, overflow:"hidden", background:"#F1F5F9", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          {s.photo_url ? <img src={s.photo_url} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{ fontSize:26, fontWeight:800, color:C.navy }}>{s.avatar}</span>}
+        </div>
+      </div>
+      <div style={{ textAlign:"center", marginTop:7, padding:"0 10px" }}>
+        <div style={{ fontSize:12.5, fontWeight:800, color:C.navy, lineHeight:1.15 }}>{(s.name||"").toUpperCase()}</div>
+        <div style={{ fontSize:10, fontWeight:800, color:C.coral, marginTop:2 }}>STUDENT{className?` · ${className.toUpperCase()}`:""}</div>
+        <div style={{ fontSize:9, color:C.textMid, marginTop:2 }}>ID: {sidOf(s)}</div>
+      </div>
+      <div style={{ position:"absolute", bottom:50, left:0, right:0, display:"flex", justifyContent:"space-between", alignItems:"flex-end", padding:"0 14px" }}>
+        <div style={{ width:72, borderTop:`1px solid ${C.navy}`, fontSize:7, color:C.textMid, paddingTop:2, textAlign:"center" }}>Holder's Signature</div>
+        {qrMap[s.id] && <img src={qrMap[s.id]} alt="QR" style={{ width:50, height:50 }}/>}
+      </div>
+      <svg viewBox="0 0 230 54" width="230" height="54" style={{ position:"absolute", bottom:0, left:0 }}>
+        <path d="M0,24 C60,4 150,46 230,14 L230,54 L0,54 Z" fill={C.accent} opacity="0.9"/>
+        <path d="M0,34 C70,14 150,50 230,24 L230,54 L0,54 Z" fill={C.navy}/>
+      </svg>
+      {session && <div style={{ position:"absolute", bottom:5, left:0, right:0, textAlign:"center", color:"#fff", fontSize:7.5, fontWeight:600 }}>Academic Session: {session}</div>}
+    </div>
+  );
+  const WaveBack = ({ s }) => (
+    <div className="id-card" style={{ width:230, height:362, background:"#fff", borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden", boxShadow:"0 6px 20px rgba(0,0,0,.12)", fontFamily:"Sora,sans-serif", position:"relative", display:"flex", flexDirection:"column", flexShrink:0 }}>
+      <div style={{ background:C.navy, color:"#fff", textAlign:"center", padding:"10px 10px" }}>
+        <div style={{ fontSize:10.5, fontWeight:800 }}>{schoolName}</div>
+        {school?.address && <div style={{ fontSize:7.5, color:"#E8F6FF", marginTop:2 }}>{school.address}</div>}
+      </div>
+      <div style={{ padding:"12px 14px", fontSize:9, color:C.textMid, flex:1, textAlign:"center" }}>
+        {school?.email && <div>Email: {school.email}</div>}
+        {school?.phone && <div style={{ marginBottom:6 }}>Tel: {school.phone}</div>}
+        <div style={{ lineHeight:1.6, marginTop:14 }}>If found, please return to the above address, or the nearest police station.</div>
+        <div style={{ fontSize:8, color:C.textMuted, marginTop:10 }}>ID: {sidOf(s)}</div>
+        <div style={{ marginTop:28, display:"flex", justifyContent:"center" }}>
+          <div style={{ width:130, borderTop:`1px solid ${C.navy}`, paddingTop:3, fontSize:8 }}>Authorised Signature</div>
+        </div>
+      </div>
+      <svg viewBox="0 0 230 48" width="230" height="48" style={{ display:"block" }}>
+        <path d="M0,22 C60,2 150,42 230,12 L230,48 L0,48 Z" fill={C.accent} opacity="0.9"/>
+        <path d="M0,32 C70,12 150,48 230,22 L230,48 L0,48 Z" fill={C.navy}/>
+      </svg>
+    </div>
+  );
+  const Classic = ({ s }) => (
+    <div className="id-card" style={{ width:340, height:206, borderRadius:14, background:`linear-gradient(135deg,${C.navy} 0%,${C.navyMid} 100%)`, padding:"14px 16px", display:"flex", flexDirection:"column", justifyContent:"space-between", boxShadow:"0 8px 28px rgba(0,0,0,.25)", position:"relative", overflow:"hidden", fontFamily:"Sora,sans-serif", flexShrink:0 }}>
+      <div style={{ position:"absolute", top:-20, right:-20, width:100, height:100, borderRadius:"50%", background:C.accent+"18" }}/>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          {school?.logo_url && <img src={school.logo_url} alt="" style={{ height:30, width:30, objectFit:"contain" }}/>}
+          <div><div style={{ color:"#fff", fontSize:11, fontWeight:800, lineHeight:1.1 }}>{schoolName}</div>{school?.address && <div style={{ color:"#8DA4C0", fontSize:8 }}>{school.address}</div>}</div>
+        </div>
+        <div style={{ background:C.accent, borderRadius:6, padding:"3px 8px", fontSize:9, fontWeight:700, color:C.navy }}>STUDENT</div>
+      </div>
+      <div style={{ display:"flex", gap:12, alignItems:"center" }}>
+        <div style={{ width:56, height:56, borderRadius:8, background:"#F1F5F9", border:`2px solid ${C.accent}`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:800, color:C.navy, overflow:"hidden", flexShrink:0 }}>{s.photo_url ? <img src={s.photo_url} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : s.avatar}</div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ color:"#fff", fontSize:14, fontWeight:800 }}>{s.name}</div>
+          <div style={{ color:"#8DA4C0", fontSize:10, marginTop:2 }}>{className}</div>
+          <div style={{ color:"#8DA4C0", fontSize:10, marginTop:1 }}>ID: {sidOf(s)}</div>
+        </div>
+        {qrMap[s.id] && <img src={qrMap[s.id]} alt="QR" style={{ width:52, height:52, background:"#fff", borderRadius:6, padding:2 }}/>}
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ color:"#8DA4C0", fontSize:9 }}>{session?`Valid: ${session}`:""}</div>
+        <div style={{ background:C.accent+"22", borderRadius:4, padding:"2px 7px", color:C.accent, fontSize:9, fontWeight:700 }}>OFFICIAL</div>
+      </div>
+    </div>
+  );
+  const CardFor = ({ s }) => design==="wave"
+    ? <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}><WaveFront s={s}/><WaveBack s={s}/></div>
+    : <Classic s={s}/>;
+
+  const CertDoc = ({ s }) => (
+    <div className="id-card" style={{ width:620, maxWidth:"100%", background:"#fff", border:`3px solid ${C.navy}`, borderRadius:8, padding:"30px 36px", textAlign:"center", position:"relative", fontFamily:"'Georgia',serif", margin:"0 auto" }}>
+      <div style={{ position:"absolute", inset:8, border:`1px solid ${C.accent}55`, borderRadius:4, pointerEvents:"none" }}/>
+      {school?.logo_url && <img src={school.logo_url} alt="" style={{ height:54, objectFit:"contain", marginBottom:6 }}/>}
+      <div style={{ fontSize:15, fontWeight:800, color:C.navy, letterSpacing:"1px" }}>{schoolName}</div>
+      {school?.address && <div style={{ fontSize:10, color:C.textMuted, marginBottom:14 }}>{school.address}</div>}
+      <div style={{ fontSize:17, fontWeight:700, color:C.navy, textTransform:"uppercase", letterSpacing:"1.5px", margin:"10px 0 18px" }}>Certificate of {certType}</div>
+      <div style={{ fontSize:12, color:C.textMid }}>This is to certify that</div>
+      <div style={{ fontSize:22, fontWeight:700, color:C.navy, margin:"8px 0", fontStyle:"italic" }}>{s.name}</div>
+      <div style={{ fontSize:12, color:C.textMid, lineHeight:1.9, maxWidth:460, margin:"0 auto" }}>
+        of {className||"the school"} has been awarded this certificate of {certType.toLowerCase()}{session?` for the ${session} academic session`:""}.
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-around", marginTop:30 }}>
+        <div style={{ borderTop:`1px solid ${C.navy}`, paddingTop:5, width:150, fontSize:11, color:C.textMid }}>Class Teacher</div>
+        <div style={{ borderTop:`1px solid ${C.navy}`, paddingTop:5, width:150, fontSize:11, color:C.textMid }}>Head Teacher</div>
       </div>
     </div>
   );
 
-  const CertPreview = ({ name, type }) => (
-    <div style={{width:"100%",maxWidth:500,background:"#fff",border:`3px solid ${C.navy}`,borderRadius:8,padding:"28px 32px",textAlign:"center",position:"relative"}}>
-      <div style={{position:"absolute",inset:8,border:`1px solid ${C.accent}44`,borderRadius:4,pointerEvents:"none"}}/>
-      <div style={{fontSize:11,fontWeight:700,color:C.textMuted,letterSpacing:"2px",marginBottom:8}}>GREENFIELD ACADEMY</div>
-      <div style={{fontSize:10,color:C.textMuted,marginBottom:16}}>12 Education Lane, Lagos · Accredited by WAEC</div>
-      <div style={{fontSize:15,fontWeight:700,color:C.navy,textTransform:"uppercase",letterSpacing:"1px",marginBottom:20}}>Certificate of {type}</div>
-      <div style={{fontSize:12,color:C.textMid,lineHeight:1.8}}>This is to certify that</div>
-      <div style={{fontSize:20,fontWeight:700,color:C.navy,margin:"8px 0",fontStyle:"italic"}}>{name}</div>
-      <div style={{fontSize:12,color:C.textMid,lineHeight:1.8}}>has successfully {type==="Graduation"?"completed the secondary school programme":"participated in this programme"} at Greenfield Academy for the academic year 2025/2026.</div>
-      <div style={{display:"flex",justifyContent:"space-around",marginTop:24}}>
-        <div style={{textAlign:"center"}}><div style={{borderTop:`1px solid ${C.navy}`,paddingTop:5,width:120,fontSize:11,color:C.textMid}}>Class Teacher</div></div>
-        <div style={{textAlign:"center"}}><div style={{borderTop:`1px solid ${C.navy}`,paddingTop:5,width:120,fontSize:11,color:C.textMid}}>Principal</div></div>
+  const AdmitCard = ({ s }) => (
+    <div className="id-card" style={{ borderRadius:12, background:`linear-gradient(135deg,${C.navyMid} 0%,${C.navy} 100%)`, padding:"16px 18px", width:340, fontFamily:"Sora,sans-serif", flexShrink:0 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+        <div style={{ color:C.accent, fontSize:10, fontWeight:800, letterSpacing:"1px" }}>EXAM ADMIT CARD</div>
+        <div style={{ color:"#8DA4C0", fontSize:9 }}>{session||""}</div>
+      </div>
+      <div style={{ display:"flex", gap:11, alignItems:"center", marginBottom:11 }}>
+        {school?.logo_url ? <img src={school.logo_url} alt="" style={{ height:34, width:34, objectFit:"contain" }}/> : <Avatar initials={s.avatar} size={34} color={C.accent}/>}
+        <div><div style={{ color:"#fff", fontSize:13, fontWeight:800 }}>{s.name}</div><div style={{ color:"#8DA4C0", fontSize:10 }}>{sidOf(s)} · {className}</div></div>
+      </div>
+      <div style={{ background:C.accent+"22", borderRadius:8, padding:"8px 11px" }}>
+        <div style={{ color:C.accent, fontSize:11, fontWeight:700 }}>{admit.title || "Examination"}</div>
+        <div style={{ color:"#8DA4C0", fontSize:10, marginTop:3 }}>
+          {[admit.date && `Date: ${admit.date}`, admit.time && `Time: ${admit.time}`, admit.venue && `Venue: ${admit.venue}`].filter(Boolean).join(" · ") || "Set the exam details above"}
+        </div>
       </div>
     </div>
   );
+
+  const classSel = <Sel label="Class" value={classId} onChange={setClassId} options={classes.map(c=>({value:String(c.id),label:c.name}))} style={{ width:170 }}/>;
+  const emptyNote = txt => <div style={{ padding:"34px", textAlign:"center", fontSize:12, color:C.textMuted }}>{txt}</div>;
 
   return (
     <div className="fi">
-      <Tabs tabs={[{id:"idcards",label:"🪪 ID Cards"},{id:"certs",label:"🏆 Certificates"},{id:"admitcards",label:"📋 Admit Cards"},{id:"templates",label:"🎨 Templates"}]} active={tab} onChange={setTab}/>
-      <div style={{marginTop:16}}>
+      <div className="no-print"><Tabs tabs={[{id:"idcards",label:"🪪 ID Cards"},{id:"certs",label:"🏆 Certificates"},{id:"admitcards",label:"📋 Admit Cards"},{id:"designs",label:"🎨 Designs"}]} active={tab} onChange={setTab}/></div>
+      <div style={{ marginTop:16 }} className="no-print">
 
         {tab==="idcards" && (
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <div style={{display:"flex",gap:9}}>
-                <Sel label="" value="all" onChange={()=>{}} options={[{value:"all",label:"All Students"},{value:"jss",label:"JSS Only"},{value:"sss",label:"SSS Only"}]} style={{width:150}}/>
+            <div style={{ display:"flex", gap:10, alignItems:"flex-end", flexWrap:"wrap", marginBottom:14 }}>
+              {classSel}
+              <Sel label="Design" value={design} onChange={setDesign} options={ID_DESIGNS.map(d=>({value:d.id,label:d.label}))} style={{ width:200 }}/>
+              <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
+                <Btn variant="secondary" size="sm" onClick={()=>doPrint("idcard", selectedStudents, `ID Cards - ${className}`)} disabled={selected.size===0}>🖨 Print Selected ({selected.size})</Btn>
+                <Btn variant="primary" size="sm" onClick={()=>doPrint("idcard", students, `ID Cards - ${className}`)} disabled={students.length===0}>🖨 Print All</Btn>
               </div>
-              <div style={{display:"flex",gap:9}}><Btn variant="secondary">🖨 Print Selected</Btn><Btn variant="primary">🖨 Print All ID Cards</Btn></div>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:16}}>
-              {STUDENTS.map(s=>(
-                <div key={s.id}>
-                  <IDCardPreview student={s} type="Student"/>
-                  <div style={{display:"flex",gap:7,marginTop:8,justifyContent:"flex-end"}}>
-                    <Btn size="sm" variant="secondary">👁 Preview</Btn>
-                    <Btn size="sm" variant="primary">🖨 Print</Btn>
-                  </div>
+            {students.length>0 && (
+              <label style={{ display:"inline-flex", alignItems:"center", gap:7, fontSize:12, color:C.textMid, marginBottom:12, cursor:"pointer" }}>
+                <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width:15, height:15 }}/> Select all ({students.length})
+              </label>
+            )}
+            <Card style={{ padding:16 }}>
+              {loading ? emptyNote("Loading students…")
+                : !classId ? emptyNote("Select a class.")
+                : students.length===0 ? emptyNote("No students in this class.")
+                : (
+                <div style={{ display:"flex", flexWrap:"wrap", gap:18 }}>
+                  {students.map(s=>(
+                    <div key={s.id} style={{ border:selected.has(s.id)?`2px solid ${C.accent}`:`1px solid ${C.border}`, borderRadius:14, padding:10, background:selected.has(s.id)?C.accentLight:"#fff" }}>
+                      <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:11, color:C.textMid, marginBottom:8, cursor:"pointer" }}>
+                        <input type="checkbox" checked={selected.has(s.id)} onChange={()=>toggle(s.id)} style={{ width:14, height:14 }}/> {s.name}
+                      </label>
+                      <CardFor s={s}/>
+                      <div style={{ marginTop:8, textAlign:"right" }}>
+                        <Btn size="sm" variant="secondary" onClick={()=>doPrint("idcard", [s], s.name)}>🖨 Print</Btn>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </Card>
           </div>
         )}
 
         {tab==="certs" && (
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <Sel label="" value="Graduation" onChange={()=>{}} options={["Graduation","Completion","Achievement","Participation","Merit"].map(t=>({value:t,label:t+" Certificate"}))} style={{width:220}}/>
-              <Btn variant="primary">🖨 Generate Certificates</Btn>
+            <div style={{ display:"flex", gap:10, alignItems:"flex-end", flexWrap:"wrap", marginBottom:14 }}>
+              {classSel}
+              <Sel label="Certificate type" value={certType} onChange={setCertType} options={["Achievement","Completion","Graduation","Participation","Merit","Excellence"].map(t=>({value:t,label:t}))} style={{ width:190 }}/>
+              <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
+                <Btn variant="secondary" size="sm" onClick={()=>doPrint("cert", selectedStudents, `Certificates - ${className}`)} disabled={selected.size===0}>🖨 Print Selected ({selected.size})</Btn>
+                <Btn variant="primary" size="sm" onClick={()=>doPrint("cert", students, `Certificates - ${className}`)} disabled={students.length===0}>🖨 Print All</Btn>
+              </div>
             </div>
-            <div style={{display:"flex",flexDirection:"column",gap:16}}>
-              {STUDENTS.slice(0,2).map(s=>(
-                <div key={s.id} style={{display:"flex",gap:14,alignItems:"flex-start"}}>
-                  <CertPreview name={s.name} type="Graduation"/>
-                  <div style={{display:"flex",flexDirection:"column",gap:8,paddingTop:8}}>
-                    <Btn size="sm" variant="primary">🖨 Print</Btn>
-                    <Btn size="sm" variant="secondary">📥 PDF</Btn>
-                  </div>
+            {students.length>0 && (
+              <label style={{ display:"inline-flex", alignItems:"center", gap:7, fontSize:12, color:C.textMid, marginBottom:12, cursor:"pointer" }}>
+                <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width:15, height:15 }}/> Select all ({students.length})
+              </label>
+            )}
+            <Card style={{ padding:16 }}>
+              {loading ? emptyNote("Loading…") : students.length===0 ? emptyNote(classId?"No students in this class.":"Select a class.")
+                : (
+                <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+                  {students.map(s=>(
+                    <div key={s.id} style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
+                      <label style={{ paddingTop:40 }}><input type="checkbox" checked={selected.has(s.id)} onChange={()=>toggle(s.id)} style={{ width:15, height:15 }}/></label>
+                      <CertDoc s={s}/>
+                      <Btn size="sm" variant="secondary" onClick={()=>doPrint("cert",[s],s.name)} style={{ marginTop:40 }}>🖨 Print</Btn>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </Card>
           </div>
         )}
 
         {tab==="admitcards" && (
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-              <Sel label="" value="Mathematics Mid-Term" onChange={()=>{}} options={["Mathematics Mid-Term","English Exam","Biology Final"].map(e=>({value:e,label:e}))} style={{width:240}}/>
-              <Btn variant="primary">🖨 Print All Admit Cards</Btn>
+            <div style={{ display:"flex", gap:10, alignItems:"flex-end", flexWrap:"wrap", marginBottom:12 }}>
+              {classSel}
+              <Input label="Exam title" value={admit.title} onChange={v=>setAdmit(p=>({...p,title:v}))} placeholder="e.g. 2nd Term Examination" style={{ width:200 }}/>
+              <Input label="Date" value={admit.date} onChange={v=>setAdmit(p=>({...p,date:v}))} type="date" style={{ width:150 }}/>
+              <Input label="Time" value={admit.time} onChange={v=>setAdmit(p=>({...p,time:v}))} placeholder="9:00 AM" style={{ width:120 }}/>
+              <Input label="Venue" value={admit.venue} onChange={v=>setAdmit(p=>({...p,venue:v}))} placeholder="Hall / Block" style={{ width:150 }}/>
+              <div style={{ marginLeft:"auto" }}>
+                <Btn variant="primary" size="sm" onClick={()=>doPrint("admit", students, `Admit Cards - ${className}`)} disabled={students.length===0}>🖨 Print All</Btn>
+              </div>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:12}}>
-              {STUDENTS.map(s=>(
-                <Card key={s.id} style={{background:`linear-gradient(135deg,${C.navyMid} 0%,${C.navy} 100%)`,border:"none",padding:"16px 18px"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
-                    <div style={{color:C.accent,fontSize:10,fontWeight:700,letterSpacing:"1px"}}>EXAM ADMIT CARD</div>
-                    <div style={{color:"#8DA4C0",fontSize:9}}>2025/2026</div>
-                  </div>
-                  <div style={{display:"flex",gap:11,alignItems:"center",marginBottom:12}}>
-                    <Avatar initials={s.avatar} size={36} color={C.accent}/>
-                    <div><div style={{color:"#fff",fontSize:13,fontWeight:700}}>{s.name}</div><div style={{color:"#8DA4C0",fontSize:10}}>{s.id} · {s.class}</div></div>
-                  </div>
-                  <div style={{background:C.accent+"22",borderRadius:8,padding:"8px 11px"}}>
-                    <div style={{color:C.accent,fontSize:11,fontWeight:700}}>Mathematics Mid-Term Examination</div>
-                    <div style={{color:"#8DA4C0",fontSize:10,marginTop:3}}>Date: June 15, 2026 · Time: 9:00 AM · Hall: Block A</div>
-                  </div>
-                </Card>
-              ))}
-            </div>
+            <Card style={{ padding:16 }}>
+              {loading ? emptyNote("Loading…") : students.length===0 ? emptyNote(classId?"No students in this class.":"Select a class.")
+                : (
+                <div style={{ display:"flex", flexWrap:"wrap", gap:14 }}>
+                  {students.map(s=><AdmitCard key={s.id} s={s}/>)}
+                </div>
+              )}
+            </Card>
           </div>
         )}
 
-        {tab==="templates" && (
+        {tab==="designs" && (
           <div>
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn variant="primary">+ Create Template</Btn></div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
-              {[["Student ID Card","Default navy + teal",C.navy,"🪪"],["Staff ID Card","Dark professional",C.navyMid,"👤"],["Graduation Certificate","Gold & cream",C.amber,"🏆"],["Achievement Award","Blue & silver",C.sky,"⭐"],["Admit Card","Compact exam card",C.purple,"📋"],["Transfer Certificate","Clean document style",C.teal,"📄"]].map(([name,desc,col,ic])=>(
-                <Card key={name} style={{textAlign:"center",cursor:"pointer"}} onClick={()=>{}}>
-                  <div style={{width:"100%",height:80,borderRadius:9,background:`linear-gradient(135deg,${col} 0%,${col}88 100%)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:30,marginBottom:11}}>{ic}</div>
-                  <div style={{fontSize:13,fontWeight:700}}>{name}</div>
-                  <div style={{fontSize:11,color:C.textMuted,marginTop:3}}>{desc}</div>
-                  <div style={{display:"flex",gap:7,justifyContent:"center",marginTop:11}}>
-                    <Btn size="sm" variant="secondary">Preview</Btn>
-                    <Btn size="sm" variant="primary">Use</Btn>
-                  </div>
-                </Card>
-              ))}
+            <div style={{ fontSize:12, color:C.textMuted, marginBottom:12 }}>Choose the default ID-card design. Cards use your school name, logo and address from Settings, with a QR code per student.</div>
+            <div style={{ display:"flex", gap:18, flexWrap:"wrap" }}>
+              {ID_DESIGNS.map(d=>{
+                const sample = students[0] || { id:"sample", name:"Student Name", avatar:"SN", student_id:"ST-0001" };
+                return (
+                  <Card key={d.id} style={{ padding:16, border: design===d.id?`2px solid ${C.accent}`:`1px solid ${C.border}` }}>
+                    <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>{d.label} {design===d.id && <Badge color="green" size="sm">Selected</Badge>}</div>
+                    <div style={{ transform:"scale(.9)", transformOrigin:"top left", marginBottom:8 }}>
+                      {d.id==="wave" ? <div style={{ display:"flex", gap:10 }}><WaveFront s={sample}/><WaveBack s={sample}/></div> : <Classic s={sample}/>}
+                    </div>
+                    <Btn size="sm" variant={design===d.id?"secondary":"primary"} onClick={()=>{ setDesign(d.id); setTab("idcards"); }}>{design===d.id?"In use":"Use this design"}</Btn>
+                  </Card>
+                );
+              })}
             </div>
           </div>
         )}
+      </div>
+
+      {/* Print-only container — renders whatever was queued for printing */}
+      <div className="print-only idprint">
+        {printKind==="idcard" && printList.map(s => <CardFor key={s.id} s={s}/>)}
+        {printKind==="cert"   && printList.map(s => <CertDoc key={s.id} s={s}/>)}
+        {printKind==="admit"  && printList.map(s => <AdmitCard key={s.id} s={s}/>)}
       </div>
     </div>
   );
