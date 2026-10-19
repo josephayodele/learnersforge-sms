@@ -1975,13 +1975,61 @@ class StudentPortalController {
         respond($rows);
     }
 
+    // Corrections for one of the student's OWN submissions: each question with the
+    // student's answer, whether it was right, the correct answer, and marks.
+    // Only available once the score is visible (teacher released results, or the
+    // exam shows scores immediately) — never leaks answers before then.
+    public static function myResultDetail(array $user, int $subId): void {
+        $s = self::me($user);
+        $sub = DB::one(
+            'SELECT es.*, e.title AS exam_title, e.show_score, e.results_released, sub.name AS subject_name
+             FROM exam_submissions es
+             JOIN exams e   ON e.id = es.exam_id
+             JOIN subjects sub ON sub.id = e.subject_id
+             WHERE es.id = ? AND es.student_id = ?', [$subId, $s['id']]);
+        if (!$sub) respond(null, 404, 'Result not found.');
+        if (!self::scoreVisible($sub)) {
+            respond(null, 403, 'Your teacher has not released the corrections for this exam yet.');
+        }
+
+        $answers    = json_decode($sub['answers'] ?? '[]', true) ?: [];
+        $subjScores = json_decode($sub['subjective_scores'] ?? 'null', true) ?: [];
+        $questions  = DB::query('SELECT id,type,question,options,answer,marks FROM exam_questions WHERE exam_id=? ORDER BY sort_order', [(int)$sub['exam_id']]);
+        foreach ($questions as &$q) {
+            $ans = $answers[$q['id']] ?? null;
+            $q['student_answer'] = $ans;
+            $q['options'] = json_decode($q['options'] ?? 'null', true);
+            if (in_array($q['type'], ['mcq','tf'], true)) {
+                $q['objective']  = true;
+                $q['is_correct'] = self::isCorrect($q, $ans);
+                $q['awarded']    = $q['is_correct'] ? (int)$q['marks'] : 0;
+            } else {
+                $q['objective'] = false;
+                $q['awarded']   = isset($subjScores[$q['id']]) ? (float)$subjScores[$q['id']] : null;
+            }
+        }
+        respond([
+            'submission' => [
+                'id' => (int)$sub['id'], 'exam_title' => $sub['exam_title'], 'subject_name' => $sub['subject_name'],
+                'score' => $sub['score'], 'max_score' => $sub['max_score'], 'needs_review' => (int)$sub['needs_review'],
+                'submitted_at' => $sub['submitted_at'],
+            ],
+            'questions' => $questions,
+        ]);
+    }
+
     // Robustly compare a student's answer to the stored correct answer.
     public static function isCorrect(array $q, $ans): bool {
         if ($ans === null || $ans === '') return false;
         $correct = trim((string)($q['answer'] ?? ''));
         if ($correct === '') return false;
         if ($q['type'] === 'mcq') {
-            $opts = json_decode($q['options'] ?? '[]', true) ?: [];
+            // options may already be decoded to an array by the caller (the admin
+            // review path decodes it before calling this), so only json_decode a
+            // string — json_decode(array) is a TypeError on PHP 8 and would 500.
+            $opts = is_array($q['options'] ?? null)
+                ? $q['options']
+                : (json_decode($q['options'] ?? '[]', true) ?: []);
             if (is_numeric($correct)) return (int)$correct === (int)$ans;         // answer stored as index
             $chosen = is_numeric($ans) ? ($opts[(int)$ans] ?? '') : $ans;          // answer stored as option text
             return mb_strtolower(trim((string)$chosen)) === mb_strtolower($correct);

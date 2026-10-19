@@ -152,6 +152,7 @@ export const getMyExam        = id => api.get(`/my/exams/${id}`);
 export const submitMyExam     = (exam_id, answers, time_taken = 0) =>
   api.post('/my/exam-submit', { exam_id, answers, time_taken });
 export const getMyResults     = () => api.get('/my/results');
+export const getMyResultDetail = subId => api.get(`/my/results/${subId}`);
 
 // ── Inventory ─────────────────────────────────────────────────────────────────
 export const getInventory    = (category = '') =>

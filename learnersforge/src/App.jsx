@@ -12,7 +12,7 @@ import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative,
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
          getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
          getExamSubmissions, getSubmission, gradeSubmission,
-         getMyExams, getMyExam, submitMyExam, getMyResults, getPublicSchoolInfo, login as apiLogin } from "./api/client";
+         getMyExams, getMyExam, submitMyExam, getMyResults, getMyResultDetail, getPublicSchoolInfo, login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -7173,6 +7173,8 @@ const StudentPortal = ({ user, school, onLogout }) => {
   const [view,       setView]       = useState("list");    // list | take
   const [exams,      setExams]      = useState([]);
   const [results,    setResults]    = useState([]);
+  const [reviewing,  setReviewing]  = useState(null);      // { submission, questions } corrections view
+  const [reviewBusy, setReviewBusy] = useState(false);
   const [loading,    setLoading]    = useState(true);
   const [active,     setActive]     = useState(null);      // exam being taken (with questions)
   const [answers,    setAnswers]    = useState({});
@@ -7188,6 +7190,25 @@ const StudentPortal = ({ user, school, onLogout }) => {
   const loadExams   = () => { setLoading(true); getMyExams().then(r => setExams(arrOf(r))).catch(() => setExams([])).finally(() => setLoading(false)); };
   const loadResults = () => getMyResults().then(r => setResults(arrOf(r))).catch(() => setResults([]));
   useEffect(() => { loadExams(); loadResults(); }, []);
+
+  const openReview = async (subId) => {
+    setReviewBusy(true);
+    try {
+      const r = await getMyResultDetail(subId);
+      setReviewing(r?.data ?? r);
+    } catch (e) { flash(e?.message || e?.data?.message || "Corrections aren't available yet."); }
+    finally { setReviewBusy(false); }
+  };
+
+  // Format a stored answer (student's or correct) for display.
+  const fmtAns = (q, val) => {
+    if (val === null || val === undefined || val === "") return "—";
+    const opts = optsOf(q.options);
+    if (q.type === "mcq") return (!isNaN(val) && opts.length) ? (opts[Number(val)] ?? val) : val;
+    if (q.type === "tf")  return (val === 0 || val === "0" || /^(1|true|t|yes)$/i.test(String(val))) ? "True"
+                               : (val === 1 || val === "1" || /^(0|false|f|no)$/i.test(String(val))) ? "False" : String(val);
+    return String(val);
+  };
 
   const doSubmit = useCallback(async (auto = false) => {
     if (!active || submitting) return;
@@ -7348,7 +7369,7 @@ const StudentPortal = ({ user, school, onLogout }) => {
       <div style={{ maxWidth:920, margin:"0 auto", padding:22 }}>
         <div style={{ display:"flex", gap:8, marginBottom:18 }}>
           {[["exams","📝 My Exams"],["results","📊 My Results"]].map(([id,l]) => (
-            <button key={id} onClick={() => setTab(id)} style={{ padding:"8px 16px", borderRadius:9, border:`1px solid ${tab===id?C.accent:C.border}`, background:tab===id?C.accentLight:C.surface, color:tab===id?C.accentDark:C.textMid, fontSize:13, fontWeight:600, cursor:"pointer" }}>{l}</button>
+            <button key={id} onClick={() => { setTab(id); setReviewing(null); }} style={{ padding:"8px 16px", borderRadius:9, border:`1px solid ${tab===id?C.accent:C.border}`, background:tab===id?C.accentLight:C.surface, color:tab===id?C.accentDark:C.textMid, fontSize:13, fontWeight:600, cursor:"pointer" }}>{l}</button>
           ))}
         </div>
 
@@ -7377,7 +7398,50 @@ const StudentPortal = ({ user, school, onLogout }) => {
           </div>
         ))}
 
-        {tab==="results" && (results.length===0 ? (
+        {tab==="results" && reviewing && (
+          <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+              <Btn onClick={() => setReviewing(null)} variant="secondary" size="sm">← Back to results</Btn>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ fontSize:14, fontWeight:700 }}>{reviewing.submission?.exam_title}</div>
+                <div style={{ fontSize:12, color:C.textMid }}>
+                  {reviewing.submission?.subject_name} · Score <strong>{reviewing.submission?.score}/{reviewing.submission?.max_score}</strong>
+                  {reviewing.submission?.needs_review ? <span style={{ color:C.amber }}> · some answers still under review</span> : null}
+                </div>
+              </div>
+            </div>
+            {(reviewing.questions || []).map((q,i) => (
+              <Card key={q.id} style={{ borderLeft:`4px solid ${q.objective ? (q.is_correct?C.accent:C.coral) : C.purple}` }}>
+                <div style={{ display:"flex", gap:7, alignItems:"center", marginBottom:6 }}>
+                  <span style={{ fontSize:11, fontWeight:700, color:C.textMuted }}>Q{i+1}</span>
+                  <Badge color={q.type==="mcq"?"blue":q.type==="tf"?"amber":q.type==="essay"?"purple":"green"} size="sm">{(q.type||"").toUpperCase()}</Badge>
+                  <span style={{ fontSize:11, color:C.textMuted }}>{q.awarded ?? 0}/{q.marks} mk</span>
+                </div>
+                <div style={{ fontSize:14, fontWeight:600, marginBottom:9 }}>{q.question}</div>
+                <div style={{ fontSize:12.5, color:C.textMid, marginBottom:5 }}>
+                  <span style={{ color:C.textMuted }}>Your answer: </span>
+                  <span style={{ whiteSpace:"pre-wrap", fontWeight:600, color:q.objective ? (q.is_correct?C.accentDark:C.coral) : C.text }}>{fmtAns(q, q.student_answer)}</span>
+                  {q.objective && <span style={{ marginLeft:8, fontWeight:700, color:q.is_correct?C.accentDark:C.coral }}>{q.is_correct ? "✓" : "✗"}</span>}
+                </div>
+                {q.objective
+                  ? (!q.is_correct && (
+                      <div style={{ fontSize:12.5, color:C.accentDark }}>
+                        <span style={{ color:C.textMuted }}>Correct answer: </span>
+                        <span style={{ fontWeight:600 }}>{fmtAns(q, q.answer)}</span>
+                      </div>
+                    ))
+                  : (
+                      <div style={{ fontSize:11.5, color:C.textMuted, marginTop:3 }}>
+                        {q.awarded === null ? "Awaiting teacher review." : `Awarded ${q.awarded} of ${q.marks} marks by your teacher.`}
+                      </div>
+                    )}
+              </Card>
+            ))}
+            <Btn onClick={() => setReviewing(null)} variant="secondary" size="sm" style={{ alignSelf:"flex-start" }}>← Back to results</Btn>
+          </div>
+        )}
+
+        {tab==="results" && !reviewing && (results.length===0 ? (
           <Card style={{ textAlign:"center", padding:"48px 16px" }}><div style={{ fontSize:34, marginBottom:10 }}>📊</div><div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>No results yet</div><div style={{ fontSize:13, color:C.textMid }}>Your submitted exams and scores will appear here.</div></Card>
         ) : (
           <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
@@ -7387,10 +7451,17 @@ const StudentPortal = ({ user, school, onLogout }) => {
                   <div style={{ fontSize:14, fontWeight:700 }}>{r.title}</div>
                   <div style={{ fontSize:11, color:C.textMuted, marginTop:2 }}>{[r.subject_name, r.exam_type].filter(Boolean).join(" · ")} · {r.submitted_at ? new Date(r.submitted_at).toLocaleDateString() : ""}</div>
                 </div>
-                <div style={{ textAlign:"right" }}>
-                  {r.score_visible
-                    ? <><div style={{ fontSize:16, fontWeight:800, color:C.accentDark }}>{r.score}/{r.max_score}</div>{r.needs_review ? <div style={{ fontSize:10, color:C.amber }}>review pending</div> : null}</>
-                    : <Badge color="gray" size="sm">Pending release</Badge>}
+                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                  <div style={{ textAlign:"right" }}>
+                    {r.score_visible
+                      ? <><div style={{ fontSize:16, fontWeight:800, color:C.accentDark }}>{r.score}/{r.max_score}</div>{r.needs_review ? <div style={{ fontSize:10, color:C.amber }}>review pending</div> : null}</>
+                      : <Badge color="gray" size="sm">Pending release</Badge>}
+                  </div>
+                  {r.score_visible && (
+                    <Btn variant="secondary" size="sm" onClick={() => openReview(r.id)} disabled={reviewBusy}>
+                      {reviewBusy ? "Loading…" : "📝 Corrections"}
+                    </Btn>
+                  )}
                 </div>
               </Card>
             ))}

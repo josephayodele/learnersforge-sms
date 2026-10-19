@@ -290,8 +290,11 @@ try {
     } elseif ($path === '/api/v1/my/exams' && $id && $method === 'GET') {
         StudentPortalController::takeExam(authGuard(), $id);
 
-    } elseif ($path === '/api/v1/my/results' && $method === 'GET') {
+    } elseif ($path === '/api/v1/my/results' && !$id && $method === 'GET') {
         StudentPortalController::myResults(authGuard());
+
+    } elseif ($path === '/api/v1/my/results' && $id && $method === 'GET') {
+        StudentPortalController::myResultDetail(authGuard(), $id);
 
     } elseif ($path === '/api/v1/my/exam-submit' && $method === 'POST') {
         StudentPortalController::submitExam(authGuard());
