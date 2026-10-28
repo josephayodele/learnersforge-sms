@@ -473,7 +473,26 @@ const AddStudentModal = ({ onClose, onCreated, edit }) => {
   const [classes,setClasses]=useState([]);
   const [saving,setSaving]=useState(false);
   const [error,setError]=useState(null);
+  // Email is auto-generated from the Student ID until the admin edits it by hand.
+  // In edit mode the existing email is kept, so treat it as already "touched".
+  const [emailTouched,setEmailTouched]=useState(isEdit);
   const set=(k)=>(v)=>setForm(p=>({...p,[k]:v}));
+
+  // The school's email domain for auto-generated student emails: derived from the
+  // portal host (portal.<domain> -> <domain>), matching the backend's rule.
+  const emailDomain = useMemo(() => {
+    let h = (typeof window !== "undefined" ? window.location.hostname : "").toLowerCase().replace(/^(www|portal|api)\./, "");
+    if (!h || h === "localhost" || h.startsWith("127.")) h = "learnersforge.ng";
+    return h;
+  }, []);
+  const emailFromSid = (sid) => {
+    const local = String(sid || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return local ? `${local}@${emailDomain}` : "";
+  };
+  // Typing a Student ID auto-fills the email (unless the admin edited it).
+  const onStudentId = (v) => setForm(p => ({ ...p, student_id: v,
+    ...(!emailTouched ? { email: emailFromSid(v) } : {}) }));
+  const onEmail = (v) => { setEmailTouched(true); set("email")(v); };
 
   // Edit mode: pull the full record and prefill.
   useEffect(()=>{
@@ -513,15 +532,13 @@ const AddStudentModal = ({ onClose, onCreated, edit }) => {
 
   const submit=async()=>{
     if(!form.first_name.trim()||!form.last_name.trim()){ setError("First and last name are required."); return; }
-    if(!form.email.trim()){ setError("Email is required."); return; }
     if(!form.class_id){ setError("Please select a class."); return; }
     setSaving(true); setError(null);
     try{
       const payload={ ...form, class_id:Number(form.class_id) };
       if(!payload.password) delete payload.password;   // keep current password when blank
-      if(isEdit) await updateStudent(edit.id, payload);
-      else       await createStudent(payload);
-      onCreated();
+      if(isEdit){ await updateStudent(edit.id, payload); onCreated(); }
+      else { const res = await createStudent(payload); onCreated(res?.data ?? res ?? {}); }
     }catch(err){
       setError(err?.message || err?.data?.error || err?.data?.message || `Failed to ${isEdit?"update":"create"} student.`);
       setSaving(false);
@@ -538,7 +555,7 @@ const AddStudentModal = ({ onClose, onCreated, edit }) => {
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
         <Input label="First Name"  value={form.first_name}    onChange={set("first_name")}    placeholder="e.g. Chidi"/>
         <Input label="Last Name"   value={form.last_name}     onChange={set("last_name")}     placeholder="e.g. Okonkwo"/>
-        <Input label="Email"       value={form.email}         onChange={set("email")}         placeholder="student@example.com" type="email"/>
+        <Input label="Email"       value={form.email}         onChange={onEmail}             placeholder="Auto-generated from Student ID" type="email"/>
         <Input label="Phone"       value={form.phone}         onChange={set("phone")}         placeholder="+234 …"/>
         <Sel   label="Gender"      value={form.gender}        onChange={set("gender")}        options={[{value:"",label:"Select…"},{value:"male",label:"Male"},{value:"female",label:"Female"}]}/>
         <Input label="Date of Birth" value={form.date_of_birth} onChange={set("date_of_birth")} type="date"/>
@@ -548,7 +565,7 @@ const AddStudentModal = ({ onClose, onCreated, edit }) => {
         <Input label="Guardian Email" value={form.guardian_email} onChange={set("guardian_email")} placeholder="guardian@example.com" type="email"/>
         <Input label="Guardian Address" value={form.guardian_address} onChange={set("guardian_address")} placeholder="Home address" style={{gridColumn:"1 / -1"}}/>
         <Input label="Admission Number" value={form.admission_number} onChange={set("admission_number")} placeholder="Auto-generated if blank"/>
-        <Input label="Student ID"     value={form.student_id}      onChange={set("student_id")}      placeholder="Auto-generated if blank"/>
+        <Input label="Student ID"     value={form.student_id}      onChange={onStudentId}           placeholder="Auto-generated if blank"/>
         <Input label="Previous School" value={form.previous_school} onChange={set("previous_school")} placeholder="Former school (optional)" style={{gridColumn:"1 / -1"}}/>
         <Input label="Medical Notes"  value={form.medical_notes}   onChange={set("medical_notes")}   placeholder="Allergies, conditions… (optional)" style={{gridColumn:"1 / -1"}}/>
         <Input label="Password" value={form.password} onChange={set("password")} type="password"
@@ -1122,7 +1139,7 @@ const Students = () => {
       {showAdd && (
         <AddStudentModal
           onClose={()=>setShowAdd(false)}
-          onCreated={()=>{ setShowAdd(false); setReloadKey(k=>k+1); }}
+          onCreated={(info)=>{ setShowAdd(false); flash(info?.email ? `Student created · login email: ${info.email}` : "Student created."); setReloadKey(k=>k+1); }}
         />
       )}
       {editStu && (

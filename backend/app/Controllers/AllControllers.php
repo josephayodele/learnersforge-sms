@@ -100,6 +100,23 @@ class StudentController {
         respond($s);
     }
 
+    // Build a student's login email from their student ID: the ID (letters/digits
+    // only, lowercased) as the local part, at the school's own domain. The domain
+    // is taken from the request host (portal.<domain> -> <domain>); on localhost it
+    // falls back to the school's configured email domain, then a sane default.
+    private static function studentEmailFromId(string $studentId, int $schoolId): string {
+        $local = strtolower(preg_replace('/[^A-Za-z0-9]+/', '', $studentId));
+        if ($local === '') $local = 'student';
+        $host = strtolower((string)($_SERVER['HTTP_HOST'] ?? ''));
+        $host = preg_replace('/:\d+$/', '', $host);        // strip any :port
+        $host = preg_replace('/^(www|portal|api)\./', '', $host);
+        if ($host === '' || $host === 'localhost' || strpos($host, '127.0.0.1') === 0) {
+            $se = (string)(DB::one('SELECT email FROM schools WHERE id=?', [$schoolId])['email'] ?? '');
+            $host = (strpos($se, '@') !== false) ? substr(strrchr($se, '@'), 1) : 'learnersforge.ng';
+        }
+        return $local . '@' . $host;
+    }
+
     public static function store(array $user): void {
         Perm::assertAdmin($user);   // enrolment is an admin action
         $b = body();
@@ -109,21 +126,37 @@ class StudentController {
         $first = trim((string)($b['first_name'] ?? ''));
         $last  = trim((string)($b['last_name'] ?? ''));
         $email = trim((string)($b['email'] ?? ''));
-        if ($first === '' || $last === '' || $email === '') respond(null, 422, 'First name, last name and email are required.');
+        // Email is no longer required: when left blank it is auto-generated from the
+        // student ID (the one provided, or the one we generate below from the new
+        // user's id). Only the name is mandatory.
+        if ($first === '' || $last === '') respond(null, 422, 'First name and last name are required.');
+        $providedSid = trim((string)($b['student_id'] ?? ''));
+        // If a student ID was typed we can derive the email up-front; for an
+        // auto-generated ID we need the new user's id first (handled below).
+        if ($email === '' && $providedSid !== '') {
+            $email = self::studentEmailFromId($providedSid, (int)$user['school_id']);
+        }
         $gender = in_array($b['gender'] ?? '', ['male','female','other'], true) ? $b['gender'] : null;
         $dob    = self::normalizeDate($b['date_of_birth'] ?? null);
 
         DB::conn()->beginTransaction();
         try {
+            // users.email is NOT NULL + UNIQUE. If we still have no email (auto ID),
+            // insert a unique provisional then replace it once the ID is known.
+            $provisional = $email !== '' ? $email : ('pending.' . bin2hex(random_bytes(5)) . '@pending.local');
             $uid = DB::exec('INSERT INTO users (school_id,first_name,last_name,email,phone,password,role,gender,date_of_birth) VALUES (?,?,?,?,?,?,?,?,?)',
-                [(int)$user['school_id'],$first,$last,$email,$nn('phone'),
+                [(int)$user['school_id'],$first,$last,$provisional,$nn('phone'),
                  password_hash($b['password'] ?? 'password123',PASSWORD_DEFAULT),'student',$gender,$dob]);
-            $sid_gen = !empty($b['student_id'])       ? $b['student_id']       : 'ST' . str_pad((string)$uid, 4, '0', STR_PAD_LEFT);
+            $sid_gen = $providedSid !== '' ? $providedSid : 'ST' . str_pad((string)$uid, 4, '0', STR_PAD_LEFT);
+            if ($email === '') {   // auto ID path: derive the email from it now
+                $email = self::studentEmailFromId($sid_gen, (int)$user['school_id']);
+                DB::run('UPDATE users SET email=? WHERE id=?', [$email, $uid]);
+            }
             $admNo   = !empty($b['admission_number']) ? $b['admission_number'] : 'GFA/' . date('Y') . '/' . str_pad((string)$uid, 3, '0', STR_PAD_LEFT);
             $stid = DB::exec('INSERT INTO students (user_id,student_id,class_id,admission_number,admission_date,guardian_name,guardian_phone,guardian_email,guardian_address,medical_notes,previous_school) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                 [$uid,$sid_gen,(int)($b['class_id'] ?? 1),$admNo,date('Y-m-d'),$nn('guardian_name'),$nn('guardian_phone'),$nn('guardian_email'),$nn('guardian_address'),$nn('medical_notes'),$nn('previous_school')]);
             DB::conn()->commit();
-            respond(['student_id' => $stid, 'user_id' => $uid, 'student_code' => $sid_gen], 201, 'Student created');
+            respond(['student_id' => $stid, 'user_id' => $uid, 'student_code' => $sid_gen, 'email' => $email], 201, 'Student created');
         } catch (Throwable $e) {
             DB::conn()->rollBack();
             $msg = $e->getMessage();
