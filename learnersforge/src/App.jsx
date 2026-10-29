@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import CCTVModule from "./CCTVModule";
-import { getStudents, getDashboard, getReportCard, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
+import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
          createSubject, deleteSubject, getClassSubjects, mapClassSubject, unmapClassSubject,
          getAcademicYears, createAcademicYear, setCurrentAcademicYear,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, resetScores, getBehaviour, saveBehaviour, getComments, saveComments,
@@ -1531,8 +1531,13 @@ const rcTdC = { ...rcTd, textAlign:"center" };
 const ReportSheet = ({ rc }) => {
   if (!rc) return null;
   const hasAttendance = (rc.attendance?.total_days > 0) || (rc.attendance?.present > 0) || (rc.attendance?.absent > 0);
+  // Print scale shrinks as the sheet gets taller (more subjects/traits) so it
+  // always lands on ONE page; .report-page below clips as a last-resort guard.
+  const rows = (rc.subjects?.length || 0) + (hasAttendance ? 3 : 0) + (rc.behaviour?.length ? 2 : 0);
+  const zoom = Math.max(0.4, Math.min(0.85, 0.74 * 17 / Math.max(rows, 17)));
   return (
-    <Card className="print-area report-sheet" style={{ maxWidth:820, margin:"0 auto 18px", border:"2px solid "+C.border, fontFamily:RC_FONT, color:C.text }}>
+    <div className="report-page">
+    <Card className="print-area report-sheet" style={{ maxWidth:820, margin:"0 auto 18px", border:"2px solid "+C.border, fontFamily:RC_FONT, color:C.text, "--rc-zoom":zoom }}>
       {/* Header — school logo + name, then report-card band */}
       <div style={{ borderBottom:`2px solid ${C.navy}`, paddingBottom:12, marginBottom:14 }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:14 }}>
@@ -1666,6 +1671,7 @@ const ReportSheet = ({ rc }) => {
         Grading Scale: A (70–100%) · B (60–69%) · C (50–59%) · D (45–49%) · E (40–44%) · F (0–39%)
       </div>
     </Card>
+    </div>
   );
 };
 
@@ -2571,6 +2577,24 @@ const Grades = () => {
       setRcError(e?.message || "Failed to load report card(s).");
     } finally { setRcBusy(false); }
   };
+  // Email the selected (or one) student's report sheet to the guardian email on file.
+  const emailSheets = async (ids) => {
+    if (!rcTerm)  { setRcError("Please select a term first."); return; }
+    if (!ids.length) return;
+    if (!window.confirm(`Email report sheet(s) to the parents/guardians of ${ids.length} student(s)?`)) return;
+    setRcBusy(true); setRcError(null);
+    try {
+      const res = await emailReportCards(Number(rcTerm), ids);
+      const d = res?.data ?? res;
+      const skipped = (d?.results || []).filter(r => r.status !== "sent");
+      flash(`Sent ${d?.sent ?? 0} of ${d?.total ?? ids.length} report sheet(s).`);
+      if (skipped.length) setRcError("Not sent: " + skipped.map(r => `${r.name || "#" + r.student_id} (${r.reason})`).join("; "));
+    } catch (e) {
+      setRcError(e?.message || e?.data?.message || "Failed to send emails.");
+    } finally { setRcBusy(false); }
+  };
+  const emailOneSheet = id => emailSheets([id]);
+  const emailSelectedSheets = () => emailSheets(rcRoster.filter(s => rcSelected.has(s.id)).map(s => s.id));
   const printOneSheet = id => gatherAndPrint([id]);
   const printSelectedSheets = () => gatherAndPrint(rcRoster.filter(s => rcSelected.has(s.id)).map(s => s.id));
 
@@ -2855,6 +2879,9 @@ const Grades = () => {
             <Btn variant="primary" size="sm" onClick={printSelectedSheets} disabled={rcBusy || rcSelected.size===0}>
               {rcBusy ? "Preparing…" : `🖨 Download Selected (${rcSelected.size})`}
             </Btn>
+            <Btn variant="secondary" size="sm" onClick={emailSelectedSheets} disabled={rcBusy || rcSelected.size===0}>
+              {`✉ Email to Parents (${rcSelected.size})`}
+            </Btn>
           </div>
 
           <Card className="no-print" style={{ padding:0 }}>
@@ -2872,7 +2899,7 @@ const Grades = () => {
                       <th style={{ padding:"10px 14px", width:44, textAlign:"center" }}>
                         <input type="checkbox" checked={rcAllSelected} onChange={toggleAllRc} style={{ width:15, height:15, cursor:"pointer" }} title="Select all"/>
                       </th>
-                      {["Student","Student ID","Report Sheet"].map(h=><th key={h} style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", letterSpacing:".5px" }}>{h}</th>)}
+                      {["Student","Student ID","Parent Email","Report Sheet"].map(h=><th key={h} style={{ padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", letterSpacing:".5px" }}>{h}</th>)}
                     </tr>
                   </thead>
                   <tbody>
@@ -2883,7 +2910,11 @@ const Grades = () => {
                         </td>
                         <td style={{ padding:"9px 14px" }}><div style={{ display:"flex", alignItems:"center", gap:9 }}><Avatar initials={s.avatar} size={26} color={[C.accent,C.sky,C.purple,C.amber,C.coral][i%5]}/><span style={{ fontSize:12, fontWeight:600 }}>{s.name}</span></div></td>
                         <td style={{ padding:"9px 14px", fontSize:11, color:C.textMuted, fontFamily:"monospace" }}>{s.student_id||s.id}</td>
-                        <td style={{ padding:"9px 14px" }}><Btn size="sm" variant="secondary" onClick={()=>printOneSheet(s.id)} disabled={rcBusy}>🖨 Print</Btn></td>
+                        <td style={{ padding:"9px 14px", fontSize:11, color: s.guardian_email ? C.textMid : C.coral }}>{s.guardian_email || "No email"}</td>
+                        <td style={{ padding:"9px 14px", whiteSpace:"nowrap" }}>
+                          <Btn size="sm" variant="secondary" onClick={()=>printOneSheet(s.id)} disabled={rcBusy}>🖨 Print</Btn>{" "}
+                          <Btn size="sm" variant="secondary" onClick={()=>emailOneSheet(s.id)} disabled={rcBusy || !s.guardian_email}>✉ Email</Btn>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

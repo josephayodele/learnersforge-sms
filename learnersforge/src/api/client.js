@@ -101,6 +101,8 @@ export const resetScores    = (class_id, subject_id, term_id) =>
   api.delete('/grades/reset', { params: { class_id, subject_id, term_id } });
 export const getReportCard  = (student_id, term_id = 2) =>
   api.get('/grades/report-card', { params: { student_id, term_id } });
+export const emailReportCards = (term_id, student_ids) =>
+  api.post('/grades/report-card/email', { term_id, student_ids });
 export const getBroadsheet  = (class_id, term_id) =>
   api.get('/grades/broadsheet', { params: { class_id, term_id } });
 export const getCumulative  = (student_id, term_ids = '1,2') =>

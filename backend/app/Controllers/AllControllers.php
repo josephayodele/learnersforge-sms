@@ -74,7 +74,7 @@ class StudentController {
             case 'name':
             default:      $orderBy = "u.last_name $dir, u.first_name $dir"; break;
         }
-        $sql = 'SELECT s.id, s.student_id, s.admission_date, s.guardian_name, s.guardian_phone,
+        $sql = 'SELECT s.id, s.student_id, s.admission_date, s.guardian_name, s.guardian_phone, s.guardian_email,
                        u.first_name, u.last_name, u.email, u.phone, u.gender, u.date_of_birth,
                        c.name AS class_name, c.id AS class_id
                 FROM students s
@@ -828,9 +828,76 @@ class GradeController {
         $studentId = (int)($_GET['student_id']??0);
         $termId    = (int)($_GET['term_id']??2);
         if (!$studentId) respond(null,422,'student_id required');
+        respond(self::buildReportCard($user, $studentId, $termId));
+    }
 
+    // Email each selected student's report sheet to the guardian email on file.
+    // Body: { term_id, student_ids: [..] }. Returns per-student sent/skipped/failed.
+    public static function emailReportCards(array $user): void {
+        $b       = json_decode(file_get_contents('php://input'), true) ?: [];
+        $termId  = (int)($b['term_id'] ?? 0);
+        $ids     = array_values(array_unique(array_map('intval', (array)($b['student_ids'] ?? []))));
+        if (!$termId || !$ids) respond(null, 422, 'term_id and student_ids required');
+        if (count($ids) > 100) respond(null, 422, 'Send at most 100 report sheets at a time.');
+
+        $results = []; $sent = 0;
+        foreach ($ids as $sid) {
+            $row = DB::one('SELECT s.guardian_email, s.guardian_name, u.first_name, u.last_name FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=? AND s.deleted_at IS NULL', [$sid, (int)$user['school_id']]);
+            if (!$row) { $results[] = ['student_id'=>$sid, 'status'=>'failed', 'reason'=>'Student not found']; continue; }
+            $name = trim($row['first_name'].' '.$row['last_name']);
+            $to   = trim((string)$row['guardian_email']);
+            if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+                $results[] = ['student_id'=>$sid, 'name'=>$name, 'status'=>'skipped', 'reason'=>'No valid guardian email on file'];
+                continue;
+            }
+            $rc = self::buildReportCard($user, $sid, $termId, true);
+            if (!$rc) { $results[] = ['student_id'=>$sid, 'name'=>$name, 'status'=>'failed', 'reason'=>'No report data']; continue; }
+            if (self::mailReportCard($rc, $to, (string)$row['guardian_name'])) { $sent++; $results[] = ['student_id'=>$sid, 'name'=>$name, 'status'=>'sent', 'to'=>$to]; }
+            else $results[] = ['student_id'=>$sid, 'name'=>$name, 'status'=>'failed', 'reason'=>'Mail server rejected the message'];
+        }
+        respond(['sent'=>$sent, 'total'=>count($ids), 'results'=>$results]);
+    }
+
+    private static function mailReportCard(array $rc, string $to, string $guardian): bool {
+        $h  = fn($v) => htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+        $sch = $rc['school'] ?? []; $st = $rc['student']; $ov = $rc['overall'];
+        $cell = 'border:1px solid #ccc;padding:6px 8px;';
+        $rows = '';
+        foreach ($rc['subjects'] as $s) {
+            $rows .= "<tr><td style=\"$cell\">{$h($s['subject'])}</td><td style=\"$cell text-align:center\">{$h($s['ca'])}</td><td style=\"$cell text-align:center\">{$h($s['exam'])}</td><td style=\"$cell text-align:center\"><b>{$h($s['total'])}</b></td><td style=\"$cell text-align:center\">{$h($s['grade'])}</td><td style=\"$cell text-align:center\">{$h($s['position'])}</td></tr>";
+        }
+        $beh = '';
+        foreach ($rc['behaviour'] as $x) $beh .= "<tr><td style=\"$cell\">{$h($x['trait'])}</td><td style=\"$cell text-align:center\">".($x['score'] !== null ? $h($x['score']).'/5' : $h($x['rating']))."</td></tr>";
+        $att = $rc['attendance'];
+        $attHtml = ($att['total_days'] > 0 || $att['present'] > 0) ? "<p><b>Attendance:</b> present {$h($att['present'])} of {$h($att['total_days'])} days ({$h($att['percentage'])}%)</p>" : '';
+        $body = "<div style=\"font-family:Georgia,serif;max-width:680px;margin:auto;color:#222\">"
+            ."<h2 style=\"text-align:center;margin:0\">{$h($sch['name'] ?? '')}</h2>"
+            ."<p style=\"text-align:center;margin:2px 0 14px\">Termly Report Sheet &middot; {$h($rc['term']['name'] ?? '')} &middot; {$h($rc['term']['year'] ?? '')}</p>"
+            .($guardian !== '' ? "<p>Dear {$h($guardian)},</p>" : '<p>Dear Parent/Guardian,</p>')
+            ."<p>Please find below the report sheet for <b>{$h($st['name'])}</b> ({$h($st['class_name'])}).</p>"
+            ."<table style=\"border-collapse:collapse;width:100%;font-size:14px\"><tr style=\"background:#f3f4f6\"><th style=\"$cell text-align:left\">Subject</th><th style=\"$cell\">C.A.</th><th style=\"$cell\">Exam</th><th style=\"$cell\">Total</th><th style=\"$cell\">Grade</th><th style=\"$cell\">Position</th></tr>$rows</table>"
+            ."<p><b>Overall:</b> {$h($ov['total'])} / {$h($ov['max'])} &middot; {$h($ov['percentage'])}% &middot; Grade {$h($ov['grade'])} &middot; Position {$h($ov['position'])} of {$h($rc['class_size'])}</p>"
+            .($beh ? "<table style=\"border-collapse:collapse;width:100%;font-size:14px\"><tr style=\"background:#f3f4f6\"><th style=\"$cell text-align:left\">Behavioural Assessment</th><th style=\"$cell\">Rating</th></tr>$beh</table>" : '')
+            .$attHtml
+            ."<p><b>Class Teacher's Remark:</b> {$h($rc['comments']['teacher_comment'] ?? '—')}</p>"
+            ."<p><b>Head Teacher's Remark:</b> {$h($rc['comments']['principal_comment'] ?? '—')}</p>"
+            ."<p style=\"font-size:12px;color:#666\">Grading: A 70–100 · B 60–69 · C 50–59 · D 45–49 · E 40–44 · F 0–39</p></div>";
+
+        $domain = preg_replace('/^www\./', '', $_SERVER['HTTP_HOST'] ?? 'localhost');
+        $from   = 'noreply@' . $domain;
+        $fromName = preg_replace('/[\r\n"]/', '', (string)($sch['name'] ?? 'School'));
+        $headers = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n"
+                 . "From: \"$fromName\" <$from>\r\n"
+                 . (!empty($sch['email']) && filter_var($sch['email'], FILTER_VALIDATE_EMAIL) ? "Reply-To: {$sch['email']}\r\n" : '');
+        $subject = '=?UTF-8?B?' . base64_encode("Report Sheet — {$st['name']} — " . ($rc['term']['name'] ?? '')) . '?=';
+        return @mail($to, $subject, $body, $headers);
+    }
+
+    // Assemble one student's report-card payload. With $soft=true returns null
+    // instead of aborting the request when the student can't be found.
+    private static function buildReportCard(array $user, int $studentId, int $termId, bool $soft = false): ?array {
         $student = DB::one('SELECT u.first_name,u.last_name,s.student_id AS sid,s.class_id,c.name AS class_name FROM students s JOIN users u ON u.id=s.user_id JOIN classes c ON c.id=s.class_id WHERE s.id=?',[$studentId]);
-        if (!$student) respond(null,404,'Student not found');
+        if (!$student) { if ($soft) return null; respond(null,404,'Student not found'); }
         $classId = (int)$student['class_id'];
 
         $school = DB::one('SELECT name,address,phone,email,logo_url,motto FROM schools WHERE id=?',[(int)$user['school_id']]);
@@ -964,7 +1031,7 @@ class GradeController {
         $comments['teacher_comment']   = !empty($comments['teacher_comment'])   ? $comments['teacher_comment']   : $autoTeacher;
         $comments['principal_comment'] = !empty($comments['principal_comment']) ? $comments['principal_comment'] : $autoPrincipal;
 
-        respond([
+        return [
             'school'     => $school,
             'term'       => $term,
             'student'    => [
@@ -978,7 +1045,7 @@ class GradeController {
             'behaviour'  => $behaviour,
             'attendance' => $attendance,
             'comments'   => $comments,
-        ]);
+        ];
     }
 
     // Class broadsheet: every student in a class for one term, with each subject's

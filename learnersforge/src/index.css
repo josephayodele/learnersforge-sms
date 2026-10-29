@@ -128,14 +128,22 @@ code {
      The scale leaves headroom so the enlarged logo/fonts don't spill a hair onto
      a blank second page. */
   .report-sheet {
-    zoom: 0.74;
+    zoom: var(--rc-zoom, 0.74); /* set per sheet from its row count */
     margin: 0 !important;
+  }
+  /* Each sheet sits in a box exactly one A4 page tall (297mm - 2x8mm margins,
+     minus a hair of slack) and clipped, so it can never run onto a second page. */
+  .report-page {
+    height: 280mm;
+    overflow: hidden;
     page-break-after: always;
+    break-after: page;
     page-break-inside: avoid;
+    break-inside: avoid;
   }
   /* The final (or only) sheet must NOT force a trailing break — that is what
      produced a blank extra page when a single card was printed. */
-  .report-sheet:last-child { page-break-after: auto !important; }
+  .report-page:last-child { page-break-after: auto !important; break-after: auto !important; }
   .print-only > *:last-child { page-break-after: auto !important; }
 
   html, body { background: #fff !important; }
