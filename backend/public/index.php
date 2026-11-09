@@ -359,6 +359,31 @@ try {
     } elseif ($path === '/api/v1/transport/fee' && $method === 'POST') {
         TransportController::recordFee(authGuard());
 
+    // ── HR (staff attendance, leave, payroll) ───────────────────────────────────
+    } elseif ($path === '/api/v1/hr/staff-attendance' && $method === 'GET') {
+        HRController::staffAttendance(authGuard());
+
+    } elseif ($path === '/api/v1/hr/staff-attendance' && $method === 'POST') {
+        HRController::saveStaffAttendance(authGuard());
+
+    } elseif ($path === '/api/v1/hr/leave' && !$id && $method === 'GET') {
+        HRController::leave(authGuard());
+
+    } elseif ($path === '/api/v1/hr/leave' && !$id && $method === 'POST') {
+        HRController::requestLeave(authGuard());
+
+    } elseif ($path === '/api/v1/hr/leave' && $id && $method === 'PUT') {
+        HRController::decideLeave(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/hr/payroll' && $method === 'GET') {
+        HRController::payroll(authGuard());
+
+    } elseif ($path === '/api/v1/hr/payroll' && $method === 'POST') {
+        HRController::savePayroll(authGuard());
+
+    } elseif ($path === '/api/v1/hr/payroll/pay' && $method === 'POST') {
+        HRController::payPayroll(authGuard());
+
     // ── Library ───────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/library/books' && $method === 'GET') {
         LibraryController::books(authGuard());

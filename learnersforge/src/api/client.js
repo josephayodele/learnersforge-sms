@@ -183,6 +183,16 @@ export const assignTransport        = data => api.post('/transport/assign', data
 export const unassignTransport      = id => api.delete(`/transport/assignments/${id}`);
 export const recordTransportFee     = data => api.post('/transport/fee', data);
 
+// ── HR (staff attendance, leave, payroll) ──────────────────────────────────────
+export const getStaffAttendance  = date => api.get('/hr/staff-attendance', { params: { date } });
+export const saveStaffAttendance = (date, records) => api.post('/hr/staff-attendance', { date, records });
+export const getLeave            = () => api.get('/hr/leave');
+export const requestLeave        = data => api.post('/hr/leave', data);
+export const decideLeave         = (id, status) => api.put(`/hr/leave/${id}`, { status });
+export const getHrPayroll        = (month, year) => api.get('/hr/payroll', { params: { month, year } });
+export const savePayroll         = data => api.post('/hr/payroll', data);
+export const markPayrollPaid     = id => api.post('/hr/payroll/pay', { id });
+
 // ── Library ───────────────────────────────────────────────────────────────────
 export const getBooks      = () => api.get('/library/books');
 export const getLoans      = () => api.get('/library/loans');

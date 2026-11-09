@@ -14,6 +14,7 @@ import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadshe
          getExamSubmissions, getSubmission, gradeSubmission,
          getMyExams, getMyExam, submitMyExam, getMyResults, getMyResultDetail, getPublicSchoolInfo,
          getRoutes, createRoute, updateRoute, deleteRoute, getTransportAssignments, assignTransport, unassignTransport, recordTransportFee,
+         getStaffAttendance, saveStaffAttendance as apiSaveStaffAttendance, getLeave, requestLeave, decideLeave, getHrPayroll, savePayroll, markPayrollPaid,
          login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
@@ -6779,61 +6780,102 @@ const SchoolCMS = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 8. HR MODULE EXTRAS — Leave Management, Staff Attendance, Payslips
 // ═══════════════════════════════════════════════════════════════════════════════
+const HR_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const ATT_OPTS = [["present","Present",C.accent],["absent","Absent",C.coral],["late","Late",C.amber],["leave","Leave",C.sky],["holiday","Holiday",C.purple]];
+
 const HRModule = () => {
-  const [tab, setTab] = useState("attendance");
+  const now = new Date();
+  const [tab, setTab]       = useState("attendance");
+  const [staff, setStaff]   = useState([]);           // staff list for dropdowns
+  const [toast, setToast]   = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 2800); };
+  const naira = n => "₦" + Number(n || 0).toLocaleString();
+
+  // Attendance
+  const [attDate, setAttDate] = useState(now.toISOString().slice(0,10));
+  const [attRows, setAttRows] = useState([]);
+  const [att, setAtt]         = useState({});          // staff_id -> status
+  const [attSaving, setAttSaving] = useState(false);
+  // Leave
+  const [leaves, setLeaves]   = useState([]);
   const [leaveModal, setLeaveModal] = useState(false);
+  // Payroll
+  const [month, setMonth]     = useState(now.getMonth()+1);
+  const [year, setYear]       = useState(now.getFullYear());
+  const [payrows, setPayrows] = useState([]);
+  const [payModal, setPayModal] = useState(null);      // {} = new, row = edit
 
-  const leaveRequests = [
-    {id:"L001",staff:"Mrs. Blessing Adeyemi",type:"Medical Leave",  from:"2026-05-20",to:"2026-05-24",days:5, status:"Approved"},
-    {id:"L002",staff:"Mr. Yusuf Abdullahi",  type:"Annual Leave",   from:"2026-06-01",to:"2026-06-10",days:10,status:"Pending"},
-    {id:"L003",staff:"Ms. Ngozi Ike",        type:"Maternity Leave",from:"2026-07-01",to:"2026-09-30",days:90,status:"Approved"},
-    {id:"L004",staff:"Mr. Charles Osei",     type:"Casual Leave",   from:"2026-05-26",to:"2026-05-26",days:1, status:"Pending"},
-  ];
+  useEffect(() => { getStaff().then(r => setStaff(arrOf(r))).catch(()=>setStaff([])); }, []);
 
-  const PAYROLL_DATA = [
-    {id:"TC001",name:"Mrs. Blessing Adeyemi",role:"Teacher",   basic:180000,housing:40000,transport:20000,ded:18000},
-    {id:"TC002",name:"Mr. Charles Osei",     role:"Teacher",   basic:175000,housing:40000,transport:20000,ded:17500},
-    {id:"TC003",name:"Ms. Ngozi Ike",        role:"Teacher",   basic:175000,housing:40000,transport:20000,ded:17500},
-    {id:"ADM1", name:"Mrs. Kemi Fashola",    role:"Admin",     basic:120000,housing:30000,transport:15000,ded:12000},
-  ];
+  const loadAtt = (d) => getStaffAttendance(d).then(r => {
+    const data = r?.data ?? r; const rows = data?.staff || [];
+    setAttRows(rows);
+    const m = {}; rows.forEach(s => { if (s.status) m[s.staff_id] = s.status; });
+    setAtt(m);
+  }).catch(()=>{ setAttRows([]); setAtt({}); });
+  const loadLeave = () => getLeave().then(r => setLeaves(arrOf(r))).catch(()=>setLeaves([]));
+  const loadPay   = (mo,yr) => getHrPayroll(mo,yr).then(r => setPayrows(arrOf(r))).catch(()=>setPayrows([]));
+
+  useEffect(() => { if (tab==="attendance") loadAtt(attDate); }, [tab, attDate]);
+  useEffect(() => { if (tab==="leave") loadLeave(); }, [tab]);
+  useEffect(() => { if (tab==="payslips") loadPay(month, year); }, [tab, month, year]);
+
+  const saveAtt = async () => {
+    setAttSaving(true);
+    try {
+      const records = attRows.map(s => ({ staff_id: s.staff_id, status: att[s.staff_id] || "present" }));
+      await apiSaveStaffAttendance(attDate, records);
+      flash("Attendance saved.");
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not save."); }
+    finally { setAttSaving(false); }
+  };
+  const decide = async (l, status) => {
+    try { await decideLeave(l.id, status); flash(`Leave ${status}.`); loadLeave(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not update."); }
+  };
+  const markPaid = async (p) => {
+    try { await markPayrollPaid(p.id); flash("Marked paid."); loadPay(month, year); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not update."); }
+  };
 
   const PayslipCard = ({ p }) => {
-    const net = p.basic + p.housing + p.transport - p.ded;
+    const gross = Number(p.basic)+Number(p.housing)+Number(p.transport);
+    const net = Number(p.net_pay ?? (gross - Number(p.deductions)));
     return (
       <div style={{border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
         <div style={{background:C.navy,padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div><div style={{color:"#fff",fontSize:13,fontWeight:700}}>{p.name}</div><div style={{color:"#8DA4C0",fontSize:11,marginTop:2}}>{p.role} · May 2026 Payslip</div></div>
-          <div style={{color:C.accent,fontSize:18,fontWeight:700}}>₦{net.toLocaleString()}</div>
+          <div><div style={{color:"#fff",fontSize:13,fontWeight:700}}>{p.first_name} {p.last_name}</div><div style={{color:"#8DA4C0",fontSize:11,marginTop:2}}>{p.designation||p.department||"Staff"} · {HR_MONTHS[month-1]} {year}</div></div>
+          <div style={{textAlign:"right"}}><div style={{color:C.accent,fontSize:18,fontWeight:700}}>{naira(net)}</div><Badge color={p.status==="paid"?"green":"amber"} size="sm">{p.status==="paid"?"Paid":"Pending"}</Badge></div>
         </div>
         <div style={{padding:"12px 18px",background:"#F8FAFC"}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <div>
               <div style={{fontSize:10,fontWeight:700,color:C.accentDark,marginBottom:6,textTransform:"uppercase"}}>Earnings</div>
-              {[["Basic Salary",p.basic],["Housing Allowance",p.housing],["Transport Allowance",p.transport]].map(([l,v])=>(
-                <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"4px 0",borderBottom:`1px solid ${C.border}`}}><span style={{color:C.textMid}}>{l}</span><span style={{fontWeight:600}}>₦{v.toLocaleString()}</span></div>
+              {[["Basic Salary",p.basic],["Housing",p.housing],["Transport",p.transport]].map(([l,v])=>(
+                <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"4px 0",borderBottom:`1px solid ${C.border}`}}><span style={{color:C.textMid}}>{l}</span><span style={{fontWeight:600}}>{naira(v)}</span></div>
               ))}
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,padding:"6px 0",color:C.accentDark}}><span>Gross</span><span>₦{(p.basic+p.housing+p.transport).toLocaleString()}</span></div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,padding:"6px 0",color:C.accentDark}}><span>Gross</span><span>{naira(gross)}</span></div>
             </div>
             <div>
               <div style={{fontSize:10,fontWeight:700,color:C.coral,marginBottom:6,textTransform:"uppercase"}}>Deductions</div>
-              {[["PAYE Tax",Math.round(p.ded*.6)],["Pension (8%)",Math.round(p.ded*.3)],["Other",Math.round(p.ded*.1)]].map(([l,v])=>(
-                <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"4px 0",borderBottom:`1px solid ${C.border}`}}><span style={{color:C.textMid}}>{l}</span><span style={{fontWeight:600,color:C.coral}}>₦{v.toLocaleString()}</span></div>
-              ))}
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,padding:"6px 0",color:C.coral}}><span>Total Deductions</span><span>₦{p.ded.toLocaleString()}</span></div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"4px 0",borderBottom:`1px solid ${C.border}`}}><span style={{color:C.textMid}}>Total deductions</span><span style={{fontWeight:600,color:C.coral}}>{naira(p.deductions)}</span></div>
+              {p.bank_name && <div style={{fontSize:11,color:C.textMuted,marginTop:8}}>{p.bank_name} · {p.account_number||"—"}</div>}
             </div>
           </div>
           <div style={{marginTop:10,padding:"10px 12px",borderRadius:9,background:C.accentLight,display:"flex",justifyContent:"space-between"}}>
             <span style={{fontSize:13,fontWeight:700}}>NET PAY</span>
-            <span style={{fontSize:16,fontWeight:700,color:C.accentDark}}>₦{net.toLocaleString()}</span>
+            <span style={{fontSize:16,fontWeight:700,color:C.accentDark}}>{naira(net)}</span>
           </div>
           <div style={{display:"flex",gap:7,justifyContent:"flex-end",marginTop:9}}>
-            <Btn size="sm" variant="secondary">📥 Download PDF</Btn>
-            <Btn size="sm" variant="secondary">📧 Email Payslip</Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>setPayModal(p)}>✏️ Edit</Btn>
+            {p.status!=="paid" && <Btn size="sm" variant="primary" onClick={()=>markPaid(p)}>Mark Paid</Btn>}
           </div>
         </div>
       </div>
     );
   };
+
+  const leaveColor = t => /medical/i.test(t)?"red":/annual/i.test(t)?"blue":/maternity|paternity/i.test(t)?"pink":/study/i.test(t)?"purple":"amber";
 
   return (
     <div className="fi">
@@ -6842,88 +6884,159 @@ const HRModule = () => {
 
         {tab==="attendance" && (
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-              <div style={{display:"flex",gap:9}}>
-                <Input label="" value="2026-05-27" onChange={()=>{}} type="date" style={{width:160}}/>
-              </div>
-              <Btn variant="primary" size="sm">💾 Save Attendance</Btn>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:10}}>
+              <Input label="" value={attDate} onChange={setAttDate} type="date" style={{width:170}}/>
+              <Btn variant="primary" size="sm" onClick={saveAtt} disabled={attSaving||attRows.length===0}>{attSaving?"Saving…":"💾 Save Attendance"}</Btn>
             </div>
+            {attRows.length===0 ? (
+              <Card style={{textAlign:"center",padding:"40px 16px",color:C.textMid}}>No staff found. Add staff first.</Card>
+            ) : (
             <Card style={{padding:0}}>
-              {[...PAYROLL_DATA,...PAYROLL_DATA.slice(0,2)].map((p,i)=>(
-                <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 18px",borderBottom:`1px solid ${C.border}`}}>
-                  <Avatar initials={p.name.split(" ").map(w=>w[0]).slice(0,2).join("")} size={32} color={C.sky}/>
-                  <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{p.name}</div><div style={{fontSize:11,color:C.textMuted}}>{p.role}</div></div>
-                  <div style={{display:"flex",gap:7}}>
-                    {[["Present","present",C.accent],["Absent","absent",C.coral],["Late","late",C.amber],["Leave","leave",C.sky]].map(([l,v,c])=>(
-                      <button key={v} style={{padding:"5px 11px",borderRadius:7,border:`1.5px solid ${i%4===["present","absent","late","leave"].indexOf(v)?c:C.border}`,background:i%4===["present","absent","late","leave"].indexOf(v)?c+"18":"transparent",fontSize:11,fontWeight:600,cursor:"pointer",color:i%4===["present","absent","late","leave"].indexOf(v)?c:C.textMid}}>{l}</button>
-                    ))}
+              {attRows.map(s=>(
+                <div key={s.staff_id} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 18px",borderBottom:`1px solid ${C.border}`,flexWrap:"wrap"}}>
+                  <Avatar initials={`${(s.first_name||" ")[0]||""}${(s.last_name||" ")[0]||""}`} size={32} color={C.sky}/>
+                  <div style={{flex:1,minWidth:140}}><div style={{fontSize:13,fontWeight:600}}>{s.first_name} {s.last_name}</div><div style={{fontSize:11,color:C.textMuted}}>{s.designation||s.department||s.staff_code}</div></div>
+                  <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+                    {ATT_OPTS.map(([v,l,c])=>{const on=(att[s.staff_id]||"present")===v;return(
+                      <button key={v} onClick={()=>setAtt(p=>({...p,[s.staff_id]:v}))} style={{padding:"5px 11px",borderRadius:7,border:`1.5px solid ${on?c:C.border}`,background:on?c+"18":"transparent",fontSize:11,fontWeight:600,cursor:"pointer",color:on?c:C.textMid}}>{l}</button>
+                    );})}
                   </div>
                 </div>
               ))}
             </Card>
+            )}
           </div>
         )}
 
         {tab==="leave" && (
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:11}}>
-                <StatCard label="Pending"  value={leaveRequests.filter(l=>l.status==="Pending").length}  color={C.amber}  icon="⏳"/>
-                <StatCard label="Approved" value={leaveRequests.filter(l=>l.status==="Approved").length} color={C.accent} icon="✅"/>
-                <StatCard label="On Leave" value="3" color={C.sky} icon="🏖"/>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:10}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:11,flex:1,maxWidth:420}}>
+                <StatCard label="Pending"  value={leaves.filter(l=>l.status==="pending").length}  color={C.amber}  icon="⏳"/>
+                <StatCard label="Approved" value={leaves.filter(l=>l.status==="approved").length} color={C.accent} icon="✅"/>
+                <StatCard label="Rejected" value={leaves.filter(l=>l.status==="rejected").length} color={C.coral} icon="✗"/>
               </div>
               <Btn variant="primary" onClick={()=>setLeaveModal(true)}>+ Request Leave</Btn>
             </div>
-            <Card style={{padding:0}}>
+            {leaves.length===0 ? (
+              <Card style={{textAlign:"center",padding:"40px 16px",color:C.textMid}}>No leave requests yet.</Card>
+            ) : (
+            <Card style={{padding:0,overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
                 <thead><tr style={{background:"#F8FAFC"}}>{["Staff","Leave Type","From","To","Days","Status","Action"].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {leaveRequests.map(l=>(
-                    <tr key={l.id} style={{borderBottom:`1px solid ${C.border}`}} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{padding:"10px 13px",fontSize:13,fontWeight:600}}>{l.staff}</td>
-                      <td style={{padding:"10px 13px"}}><Badge color={l.type.includes("Medical")?"red":l.type.includes("Annual")?"blue":l.type.includes("Maternity")?"pink":"amber"} size="sm">{l.type}</Badge></td>
-                      <td style={{padding:"10px 13px",fontSize:12,color:C.textMuted}}>{l.from}</td>
-                      <td style={{padding:"10px 13px",fontSize:12,color:C.textMuted}}>{l.to}</td>
+                  {leaves.map(l=>(
+                    <tr key={l.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"10px 13px",fontSize:13,fontWeight:600}}>{l.first_name} {l.last_name}</td>
+                      <td style={{padding:"10px 13px"}}><Badge color={leaveColor(l.type)} size="sm">{l.type}</Badge></td>
+                      <td style={{padding:"10px 13px",fontSize:12,color:C.textMuted}}>{l.from_date}</td>
+                      <td style={{padding:"10px 13px",fontSize:12,color:C.textMuted}}>{l.to_date}</td>
                       <td style={{padding:"10px 13px",fontSize:13,fontWeight:700}}>{l.days}</td>
-                      <td style={{padding:"10px 13px"}}><Badge color={l.status==="Approved"?"green":"amber"} size="sm">{l.status}</Badge></td>
+                      <td style={{padding:"10px 13px"}}><Badge color={l.status==="approved"?"green":l.status==="rejected"?"red":"amber"} size="sm">{l.status}</Badge></td>
                       <td style={{padding:"10px 13px"}}>
-                        {l.status==="Pending"&&<div style={{display:"flex",gap:5}}><Btn size="sm" variant="primary">✅</Btn><Btn size="sm" variant="danger">✗</Btn></div>}
-                        {l.status==="Approved"&&<Btn size="sm" variant="ghost">View</Btn>}
+                        {l.status==="pending"
+                          ? <div style={{display:"flex",gap:5}}><Btn size="sm" variant="primary" onClick={()=>decide(l,"approved")}>✅</Btn><Btn size="sm" variant="danger" onClick={()=>decide(l,"rejected")}>✗</Btn></div>
+                          : <span style={{fontSize:11,color:C.textMuted}}>{l.approver_first?`by ${l.approver_first}`:"—"}</span>}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </Card>
+            )}
           </div>
         )}
 
         {tab==="payslips" && (
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <Sel label="" value="May 2026" onChange={()=>{}} options={["May 2026","April 2026","March 2026"].map(m=>({value:m,label:m}))} style={{width:150}}/>
-              <div style={{display:"flex",gap:9}}><Btn variant="secondary">📧 Email All Payslips</Btn><Btn variant="primary">📥 Download All PDFs</Btn></div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
+              <div style={{display:"flex",gap:8}}>
+                <Sel value={String(month)} onChange={v=>setMonth(Number(v))} options={HR_MONTHS.map((m,i)=>({value:String(i+1),label:m}))} style={{width:150}}/>
+                <Sel value={String(year)} onChange={v=>setYear(Number(v))} options={[0,1,2].map(d=>now.getFullYear()-d).map(y=>({value:String(y),label:String(y)}))} style={{width:110}}/>
+              </div>
+              <Btn variant="primary" onClick={()=>setPayModal({})} disabled={staff.length===0}>+ Generate Payslip</Btn>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:14}}>
-              {PAYROLL_DATA.map(p=><PayslipCard key={p.id} p={p}/>)}
+            {payrows.length===0 ? (
+              <Card style={{textAlign:"center",padding:"44px 16px"}}><div style={{fontSize:30,marginBottom:8}}>💰</div><div style={{fontSize:14,fontWeight:700,marginBottom:4}}>No payslips for {HR_MONTHS[month-1]} {year}</div><div style={{fontSize:12,color:C.textMid}}>Click "Generate Payslip" to add one.</div></Card>
+            ) : (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:14}}>
+              {payrows.map(p=><PayslipCard key={p.id} p={p}/>)}
             </div>
+            )}
           </div>
         )}
       </div>
 
-      {leaveModal&&<Modal title="📝 Leave Request" onClose={()=>setLeaveModal(false)} width={460}>
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <Sel label="Staff Member" value="" onChange={()=>{}} options={[{value:"",label:"Select staff"},...PAYROLL_DATA.map(p=>({value:p.id,label:p.name}))]}/>
-          <Sel label="Leave Type" value="Annual Leave" onChange={()=>{}} options={["Annual Leave","Medical Leave","Maternity Leave","Paternity Leave","Casual Leave","Study Leave"].map(t=>({value:t,label:t}))}/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <Input label="From Date" value="" onChange={()=>{}} type="date"/>
-            <Input label="To Date"   value="" onChange={()=>{}} type="date"/>
-          </div>
-          <div><label style={{fontSize:11,fontWeight:700,color:C.textMid,textTransform:"uppercase",letterSpacing:".4px",display:"block",marginBottom:4}}>Reason</label><textarea placeholder="Brief reason for leave request…" style={{width:"100%",padding:"8px 11px",borderRadius:8,border:`1px solid ${C.border}`,fontSize:13,minHeight:70,resize:"none",outline:"none",fontFamily:"Sora,sans-serif"}} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/></div>
-          <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setLeaveModal(false)}>Cancel</Btn><Btn variant="primary" onClick={()=>setLeaveModal(false)}>Submit Request</Btn></div>
-        </div>
-      </Modal>}
+      {leaveModal && <LeaveModal staff={staff} onClose={()=>setLeaveModal(false)} onDone={()=>{setLeaveModal(false); loadLeave();}} flash={flash}/>}
+      {payModal && <PayslipModal row={payModal} staff={staff} month={month} year={year} onClose={()=>setPayModal(null)} onDone={()=>{setPayModal(null); loadPay(month,year);}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600}}>{toast}</div>}
     </div>
+  );
+};
+
+const LeaveModal = ({ staff, onClose, onDone, flash }) => {
+  const [f, setF] = useState({ staff_id:"", type:"Annual Leave", from_date:"", to_date:"", reason:"" });
+  const [saving, setSaving] = useState(false);
+  const set = k => v => setF(p => ({ ...p, [k]: v }));
+  const submit = async () => {
+    if (!f.staff_id || !f.from_date || !f.to_date) { flash("Staff and dates are required."); return; }
+    setSaving(true);
+    try { await requestLeave({ ...f, staff_id:Number(f.staff_id) }); flash("Leave requested."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not submit."); setSaving(false); }
+  };
+  return (
+    <Modal title="📝 Leave Request" onClose={saving?()=>{}:onClose} width={480}>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <Sel label="Staff Member" value={f.staff_id} onChange={set("staff_id")} options={[{value:"",label:"Select staff…"},...staff.map(s=>({value:String(s.id),label:`${s.first_name} ${s.last_name}`}))]}/>
+        <Sel label="Leave Type" value={f.type} onChange={set("type")} options={["Annual Leave","Medical Leave","Maternity Leave","Paternity Leave","Casual Leave","Study Leave"].map(t=>({value:t,label:t}))}/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <Input label="From Date" value={f.from_date} onChange={set("from_date")} type="date"/>
+          <Input label="To Date"   value={f.to_date}   onChange={set("to_date")}   type="date"/>
+        </div>
+        <Input label="Reason" value={f.reason} onChange={set("reason")} placeholder="Brief reason (optional)"/>
+        <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn><Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Submitting…":"Submit Request"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
+
+const PayslipModal = ({ row, staff, month, year, onClose, onDone, flash }) => {
+  const isEdit = !!row.id;
+  const [f, setF] = useState({
+    staff_id: row.staff_id?String(row.staff_id):"",
+    basic: row.basic!=null?String(row.basic):"", housing: row.housing!=null?String(row.housing):"",
+    transport: row.transport!=null?String(row.transport):"", deductions: row.deductions!=null?String(row.deductions):"",
+  });
+  const [saving, setSaving] = useState(false);
+  const set = k => v => setF(p => ({ ...p, [k]: v }));
+  const net = (Number(f.basic||0)+Number(f.housing||0)+Number(f.transport||0)-Number(f.deductions||0));
+  const submit = async () => {
+    if (!f.staff_id) { flash("Pick a staff member."); return; }
+    setSaving(true);
+    try {
+      await savePayroll({ staff_id:Number(f.staff_id), month, year, basic:Number(f.basic||0), housing:Number(f.housing||0), transport:Number(f.transport||0), deductions:Number(f.deductions||0) });
+      flash("Payslip saved."); onDone();
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not save."); setSaving(false); }
+  };
+  return (
+    <Modal title={isEdit?"Edit Payslip":"Generate Payslip"} onClose={saving?()=>{}:onClose} width={500}>
+      <div style={{fontSize:12,color:C.textMuted,marginBottom:12}}>For {HR_MONTHS[month-1]} {year}</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div style={{gridColumn:"1 / -1"}}>
+          <Sel label="Staff Member" value={f.staff_id} onChange={set("staff_id")} disabled={isEdit}
+               options={[{value:"",label:"Select staff…"},...staff.map(s=>({value:String(s.id),label:`${s.first_name} ${s.last_name}`}))]}/>
+        </div>
+        <Input label="Basic (₦)" value={f.basic} onChange={set("basic")} type="number"/>
+        <Input label="Housing (₦)" value={f.housing} onChange={set("housing")} type="number"/>
+        <Input label="Transport (₦)" value={f.transport} onChange={set("transport")} type="number"/>
+        <Input label="Deductions (₦)" value={f.deductions} onChange={set("deductions")} type="number"/>
+      </div>
+      <div style={{marginTop:14,padding:"10px 14px",borderRadius:9,background:C.accentLight,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontSize:13,fontWeight:700}}>Net Pay</span>
+        <span style={{fontSize:16,fontWeight:700,color:C.accentDark}}>₦{net.toLocaleString()}</span>
+      </div>
+      <div style={{display:"flex",gap:9,justifyContent:"flex-end",marginTop:16}}><Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn><Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Saving…":"Save Payslip"}</Btn></div>
+    </Modal>
   );
 };
 

@@ -1823,6 +1823,126 @@ class TransportController {
     }
 }
 
+// ─── HRController ─────────────────────────────────────────────────────────────
+// Human-resources module: daily staff attendance, leave requests/approvals, and
+// monthly payroll / payslips. All admin-only and scoped to the school.
+class HRController {
+    private const ATT_STATUSES   = ['present','absent','late','leave','holiday'];
+    private const LEAVE_STATUSES = ['pending','approved','rejected'];
+
+    private static function ownsStaff(array $user, int $staffId): bool {
+        return (bool)DB::one('SELECT 1 x FROM staff s JOIN users u ON u.id=s.user_id WHERE s.id=? AND u.school_id=?',
+            [$staffId, (int)$user['school_id']]);
+    }
+
+    // ── Staff attendance ──
+    // Every staff member with their status for ?date= (null when unmarked).
+    public static function staffAttendance(array $user): void {
+        Perm::assertAdmin($user);
+        $date = $_GET['date'] ?? date('Y-m-d');
+        $rows = DB::query(
+            'SELECT s.id AS staff_id, s.staff_id AS staff_code, s.department, s.designation,
+                    u.first_name, u.last_name,
+                    sa.status, sa.check_in, sa.remark
+             FROM staff s JOIN users u ON u.id = s.user_id
+             LEFT JOIN staff_attendance sa ON sa.staff_id = s.id AND sa.date = ?
+             WHERE u.school_id = ? AND u.deleted_at IS NULL AND s.deleted_at IS NULL
+             ORDER BY u.last_name, u.first_name', [$date, (int)$user['school_id']]);
+        respond(['date' => $date, 'staff' => $rows]);
+    }
+
+    public static function saveStaffAttendance(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $date = $b['date'] ?? date('Y-m-d');
+        $recs = $b['records'] ?? [];
+        $n = 0;
+        foreach ($recs as $r) {
+            $staffId = (int)($r['staff_id'] ?? 0);
+            if (!$staffId || !self::ownsStaff($user, $staffId)) continue;
+            $status = in_array($r['status'] ?? '', self::ATT_STATUSES, true) ? $r['status'] : 'present';
+            DB::exec('INSERT INTO staff_attendance (staff_id,date,status,check_in,remark,recorded_by) VALUES (?,?,?,?,?,?)
+                      ON DUPLICATE KEY UPDATE status=VALUES(status), check_in=VALUES(check_in), remark=VALUES(remark), recorded_by=VALUES(recorded_by)',
+                [$staffId, $date, $status, ($r['check_in'] ?? null) ?: null, ($r['remark'] ?? null) ?: null, (int)$user['id']]);
+            $n++;
+        }
+        respond(['saved' => $n]);
+    }
+
+    // ── Leave ──
+    public static function leave(array $user): void {
+        Perm::assertAdmin($user);
+        respond(DB::query(
+            'SELECT lr.*, u.first_name, u.last_name, s.staff_id AS staff_code, s.department,
+                    au.first_name AS approver_first, au.last_name AS approver_last
+             FROM leave_requests lr
+             JOIN staff s ON s.id = lr.staff_id
+             JOIN users u ON u.id = s.user_id
+             LEFT JOIN users au ON au.id = lr.approved_by
+             WHERE u.school_id = ? ORDER BY lr.created_at DESC', [(int)$user['school_id']]));
+    }
+
+    public static function requestLeave(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $staffId = (int)($b['staff_id'] ?? 0);
+        $from = $b['from_date'] ?? ''; $to = $b['to_date'] ?? '';
+        if (!$staffId || $from === '' || $to === '') respond(null, 422, 'Staff, from and to dates are required.');
+        if (!self::ownsStaff($user, $staffId)) respond(null, 404, 'Staff not found.');
+        $days = max(1, (int)floor((strtotime($to) - strtotime($from)) / 86400) + 1);
+        $id = DB::exec('INSERT INTO leave_requests (staff_id,type,from_date,to_date,days,reason,status) VALUES (?,?,?,?,?,?,"pending")',
+            [$staffId, $b['type'] ?? 'Casual Leave', $from, $to, $days, ($b['reason'] ?? null) ?: null]);
+        respond(['id' => $id, 'days' => $days], 201, 'Leave requested');
+    }
+
+    public static function decideLeave(array $user, int $id): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $status = in_array($b['status'] ?? '', self::LEAVE_STATUSES, true) ? $b['status'] : 'pending';
+        DB::run('UPDATE leave_requests lr JOIN staff s ON s.id=lr.staff_id JOIN users u ON u.id=s.user_id
+                 SET lr.status=?, lr.approved_by=? WHERE lr.id=? AND u.school_id=?',
+            [$status, (int)$user['id'], $id, (int)$user['school_id']]);
+        respond(['updated' => true, 'status' => $status]);
+    }
+
+    // ── Payroll / payslips ──
+    public static function payroll(array $user): void {
+        Perm::assertAdmin($user);
+        $month = (int)($_GET['month'] ?? date('n'));
+        $year  = (int)($_GET['year']  ?? date('Y'));
+        respond(DB::query(
+            'SELECT p.*, u.first_name, u.last_name, u.email,
+                    s.staff_id AS staff_code, s.department, s.designation, s.bank_name, s.account_number
+             FROM payroll p JOIN staff s ON s.id = p.staff_id JOIN users u ON u.id = s.user_id
+             WHERE p.month = ? AND p.year = ? AND u.school_id = ? ORDER BY u.last_name',
+            [$month, $year, (int)$user['school_id']]));
+    }
+
+    public static function savePayroll(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $staffId = (int)($b['staff_id'] ?? 0);
+        $month = (int)($b['month'] ?? date('n'));
+        $year  = (int)($b['year']  ?? date('Y'));
+        if (!$staffId) respond(null, 422, 'Staff is required.');
+        if ($month < 1 || $month > 12) respond(null, 422, 'Invalid month.');
+        if (!self::ownsStaff($user, $staffId)) respond(null, 404, 'Staff not found.');
+        DB::exec('INSERT INTO payroll (staff_id,month,year,basic,housing,transport,deductions) VALUES (?,?,?,?,?,?,?)
+                  ON DUPLICATE KEY UPDATE basic=VALUES(basic), housing=VALUES(housing), transport=VALUES(transport), deductions=VALUES(deductions)',
+            [$staffId, $month, $year, (float)($b['basic'] ?? 0), (float)($b['housing'] ?? 0), (float)($b['transport'] ?? 0), (float)($b['deductions'] ?? 0)]);
+        respond(['saved' => true], 201, 'Payslip saved');
+    }
+
+    public static function payPayroll(array $user): void {
+        Perm::assertAdmin($user);
+        $id = (int)(body()['id'] ?? 0);
+        DB::run('UPDATE payroll p JOIN staff s ON s.id=p.staff_id JOIN users u ON u.id=s.user_id
+                 SET p.status="paid", p.paid_date=CURDATE() WHERE p.id=? AND u.school_id=?',
+            [$id, (int)$user['school_id']]);
+        respond(['paid' => true]);
+    }
+}
+
 // ─── LibraryController ────────────────────────────────────────────────────────
 class LibraryController {
     public static function books(array $user): void {
