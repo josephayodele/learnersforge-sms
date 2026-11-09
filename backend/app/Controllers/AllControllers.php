@@ -2574,3 +2574,318 @@ class StudentPortalController {
         return false;
     }
 }
+
+// ─── Notify ───────────────────────────────────────────────────────────────────
+// Channel adapters for the Communications module. Email uses PHP mail() (works
+// with zero configuration). WhatsApp uses Twilio, but only when config/twilio.php
+// is present and filled in — otherwise WhatsApp sends are reported as "skipped".
+// Nothing else in the app talks to the mail server or Twilio, so either channel
+// can be swapped out here without touching the controllers.
+class Notify {
+    // Twilio config array, or null when the file is missing / still a placeholder.
+    public static function twilioConfig(): ?array {
+        $path = dirname(__DIR__, 2) . '/config/twilio.php';
+        if (!is_file($path)) return null;
+        $cfg = @require $path;
+        if (!is_array($cfg)) return null;
+        $sid  = trim((string)($cfg['account_sid'] ?? ''));
+        $tok  = trim((string)($cfg['auth_token'] ?? ''));
+        $from = trim((string)($cfg['whatsapp_from'] ?? ''));
+        if ($sid === '' || $tok === '' || $from === '') return null;
+        if (strncmp($sid, 'YOUR_', 5) === 0 || strncmp($tok, 'YOUR_', 5) === 0) return null;
+        return $cfg;
+    }
+
+    public static function whatsAppConfigured(): bool { return self::twilioConfig() !== null; }
+
+    // Normalise a phone number to E.164. Nigerian local formats (0803…, 234803…,
+    // +234803…) all map to +234803…. Returns null when it can't be understood.
+    public static function toE164(?string $phone, string $country = '234'): ?string {
+        $p = preg_replace('/[^\d+]/', '', (string)$phone);
+        if ($p === '') return null;
+        if ($p[0] === '+')            return strlen($p) >= 8 ? $p : null;
+        if (strncmp($p, '00', 2) === 0) $p = substr($p, 2);          // 00<cc>… intl prefix
+        if ($p === '')                return null;
+        if ($p[0] === '0')            return '+' . $country . substr($p, 1); // local 0803…
+        if (strncmp($p, $country, strlen($country)) === 0) return '+' . $p;  // already has cc
+        if (strlen($p) >= 10)         return '+' . $country . $p;     // bare subscriber number
+        return null;
+    }
+
+    // Send an HTML email via the built-in mailer. Returns [bool ok, ?string error].
+    public static function email(string $to, string $subject, string $html, array $school): array {
+        if (!filter_var($to, FILTER_VALIDATE_EMAIL)) return [false, 'Invalid email address'];
+        $domain   = preg_replace('/^(www|portal|api)\./', '', $_SERVER['HTTP_HOST'] ?? 'localhost');
+        $from     = 'noreply@' . $domain;
+        $fromName = preg_replace('/[\r\n"]/', '', (string)($school['name'] ?? 'School'));
+        $headers  = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n"
+                  . "From: \"$fromName\" <$from>\r\n"
+                  . (!empty($school['email']) && filter_var($school['email'], FILTER_VALIDATE_EMAIL) ? "Reply-To: {$school['email']}\r\n" : '');
+        $subj = '=?UTF-8?B?' . base64_encode($subject) . '?=';
+        $ok = @mail($to, $subj, $html, $headers);
+        return [$ok, $ok ? null : 'Mail server rejected the message'];
+    }
+
+    // Send a WhatsApp message via Twilio. $cfg comes from twilioConfig().
+    public static function whatsApp(array $cfg, string $toE164, string $text): array {
+        $sid  = (string)$cfg['account_sid'];
+        $tok  = (string)$cfg['auth_token'];
+        $raw  = (string)$cfg['whatsapp_from'];
+        $from = 'whatsapp:' . (strncmp($raw, '+', 1) === 0 ? $raw : '+' . $raw);
+        $url  = 'https://api.twilio.com/2010-04-01/Accounts/' . rawurlencode($sid) . '/Messages.json';
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_USERPWD        => $sid . ':' . $tok,
+            CURLOPT_POSTFIELDS     => http_build_query(['From' => $from, 'To' => 'whatsapp:' . $toE164, 'Body' => $text]),
+            CURLOPT_TIMEOUT        => (int)($cfg['timeout'] ?? 20),
+            CURLOPT_CONNECTTIMEOUT => 10,
+        ]);
+        $res  = curl_exec($ch);
+        $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $cerr = curl_error($ch);
+        curl_close($ch);
+        if ($res === false) return [false, 'Twilio request failed: ' . $cerr];
+        $j = json_decode($res, true);
+        if ($http >= 400) return [false, is_array($j) ? ($j['message'] ?? ('Twilio HTTP ' . $http)) : ('Twilio HTTP ' . $http)];
+        return [true, null];
+    }
+
+    // Wrap a plain-text message in a simple, school-branded HTML email body.
+    public static function htmlBody(array $school, string $subject, string $message): string {
+        $h = fn($v) => htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+        $paras = preg_split('/\n{2,}/', trim($message)) ?: [''];
+        $body  = implode('', array_map(fn($p) => '<p style="margin:0 0 12px">' . nl2br($h($p)) . '</p>', $paras));
+        $name  = $school['name'] ?? 'School';
+        return '<div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:auto;color:#1f2937">'
+             . '<h2 style="margin:0 0 4px">' . $h($name) . '</h2>'
+             . ($subject !== '' ? '<p style="margin:0 0 16px;color:#6b7280;font-size:14px">' . $h($subject) . '</p>' : '')
+             . '<div style="font-size:15px;line-height:1.5">' . $body . '</div>'
+             . '<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">'
+             . '<p style="font-size:12px;color:#9ca3af">Sent via ' . $h($name) . ' &middot; LearnersForge</p></div>';
+    }
+}
+
+// ─── CommunicationController ──────────────────────────────────────────────────
+// Admin broadcasts (email + WhatsApp), event reminders, and a read-only parent-
+// portal preview. Recipients are resolved from live data — student guardians and
+// staff users — and every send is logged in communications / communication_recipients.
+class CommunicationController {
+    private const AUDIENCES = ['all_guardians', 'class_guardians', 'all_staff'];
+
+    // Resolve an audience to recipients: list of ['name','email','phone'].
+    private static function recipients(int $sid, string $audience, ?int $classId): array {
+        if ($audience === 'all_staff') {
+            return DB::query(
+                "SELECT CONCAT(first_name,' ',last_name) name, email, phone
+                   FROM users
+                  WHERE school_id=? AND deleted_at IS NULL AND is_active=1
+                    AND role IN ('school_admin','teacher','accountant')", [$sid]);
+        }
+        // Guardian audiences read contact details straight off the students table.
+        $sql = "SELECT COALESCE(NULLIF(s.guardian_name,''), CONCAT(u.first_name,' ',u.last_name)) name,
+                       s.guardian_email email, s.guardian_phone phone
+                  FROM students s JOIN users u ON u.id=s.user_id
+                 WHERE u.school_id=? AND s.deleted_at IS NULL";
+        $params = [$sid];
+        if ($audience === 'class_guardians') {
+            if (!$classId) respond(null, 422, 'Pick a class for a single-class audience.');
+            $sql .= ' AND s.class_id=?'; $params[] = $classId;
+        }
+        return DB::query($sql, $params);
+    }
+
+    // GET /communications/audiences — options with live recipient counts.
+    public static function audiences(array $user): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id'];
+        $guardians = (int)(DB::one(
+            "SELECT COUNT(*) c FROM students s JOIN users u ON u.id=s.user_id
+              WHERE u.school_id=? AND s.deleted_at IS NULL
+                AND (COALESCE(s.guardian_email,'')<>'' OR COALESCE(s.guardian_phone,'')<>'')", [$sid])['c'] ?? 0);
+        $staff = (int)(DB::one(
+            "SELECT COUNT(*) c FROM users WHERE school_id=? AND deleted_at IS NULL AND is_active=1
+                AND role IN ('school_admin','teacher','accountant')", [$sid])['c'] ?? 0);
+        $classes = DB::query(
+            "SELECT c.id, c.name, COUNT(s.id) students
+               FROM classes c LEFT JOIN students s ON s.class_id=c.id AND s.deleted_at IS NULL
+              WHERE c.school_id=? AND c.deleted_at IS NULL GROUP BY c.id, c.name ORDER BY c.name", [$sid]);
+        respond(['all_guardians' => $guardians, 'all_staff' => $staff, 'classes' => $classes,
+                 'whatsapp_configured' => Notify::whatsAppConfigured()]);
+    }
+
+    // Shared send path for both ad-hoc notices and event reminders.
+    private static function dispatch(array $user, string $subject, string $message, string $audience,
+                                     ?int $classId, array $channels, string $kind, ?int $eventId = null): array {
+        $sid    = (int)$user['school_id'];
+        $school = DB::one('SELECT name,email FROM schools WHERE id=?', [$sid]) ?: ['name' => 'School'];
+        $wantEmail = in_array('email', $channels, true);
+        $wantWa    = in_array('whatsapp', $channels, true);
+        $tw        = $wantWa ? Notify::twilioConfig() : null;      // null => WhatsApp skipped
+        $country   = (string)($tw['default_country'] ?? '234');
+        $html      = Notify::htmlBody($school, $subject, $message);
+        $plain     = ($subject !== '' ? $subject . "\n\n" : '') . $message;
+        $mailSubj  = $subject !== '' ? $subject : ('Message from ' . ($school['name'] ?? 'School'));
+
+        $people = self::recipients($sid, $audience, $classId);
+        $cid = DB::exec(
+            'INSERT INTO communications (school_id,sender_id,kind,event_id,subject,body,audience,class_id,channels)
+             VALUES (?,?,?,?,?,?,?,?,?)',
+            [$sid, (int)$user['id'], $kind, $eventId, $subject, $message, $audience, $classId, implode(',', $channels)]);
+
+        $sentEmail = 0; $sentWa = 0; $failed = 0; $skipped = 0;
+        foreach ($people as $p) {
+            if ($wantEmail) {
+                $to = trim((string)($p['email'] ?? ''));
+                if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+                    self::logRecipient($cid, $p['name'] ?? '', 'email', $to, 'skipped', 'No valid email on file'); $skipped++;
+                } else {
+                    [$ok, $err] = Notify::email($to, $mailSubj, $html, $school);
+                    self::logRecipient($cid, $p['name'] ?? '', 'email', $to, $ok ? 'sent' : 'failed', $err);
+                    $ok ? $sentEmail++ : $failed++;
+                }
+            }
+            if ($wantWa) {
+                $e164 = Notify::toE164($p['phone'] ?? '', $country);
+                if (!$tw) {
+                    self::logRecipient($cid, $p['name'] ?? '', 'whatsapp', (string)($p['phone'] ?? ''), 'skipped', 'WhatsApp not configured'); $skipped++;
+                } elseif (!$e164) {
+                    self::logRecipient($cid, $p['name'] ?? '', 'whatsapp', (string)($p['phone'] ?? ''), 'skipped', 'No valid phone on file'); $skipped++;
+                } else {
+                    [$ok, $err] = Notify::whatsApp($tw, $e164, $plain);
+                    self::logRecipient($cid, $p['name'] ?? '', 'whatsapp', $e164, $ok ? 'sent' : 'failed', $err);
+                    $ok ? $sentWa++ : $failed++;
+                }
+            }
+        }
+        DB::run('UPDATE communications SET recipients=?, sent_email=?, sent_whatsapp=?, failed=?, skipped=? WHERE id=?',
+            [count($people), $sentEmail, $sentWa, $failed, $skipped, $cid]);
+        return ['id' => $cid, 'recipients' => count($people), 'sent_email' => $sentEmail, 'sent_whatsapp' => $sentWa,
+                'failed' => $failed, 'skipped' => $skipped, 'whatsapp_configured' => $tw !== null];
+    }
+
+    private static function logRecipient(int $cid, string $name, string $channel, string $dest, string $status, ?string $err): void {
+        DB::run('INSERT INTO communication_recipients (communication_id,name,channel,destination,status,error) VALUES (?,?,?,?,?,?)',
+            [$cid, mb_substr($name, 0, 160), $channel, mb_substr($dest, 0, 190), $status, $err !== null ? mb_substr($err, 0, 255) : null]);
+    }
+
+    private static function summaryMsg(array $r): string {
+        if ((int)$r['recipients'] === 0) return 'No recipients matched that audience.';
+        $bits = [];
+        if ($r['sent_email'])    $bits[] = $r['sent_email'] . ' email';
+        if ($r['sent_whatsapp']) $bits[] = $r['sent_whatsapp'] . ' WhatsApp';
+        $head = $bits ? ('Sent ' . implode(' + ', $bits)) : 'Nothing delivered';
+        if ($r['failed'])  $head .= ' · ' . $r['failed'] . ' failed';
+        if ($r['skipped']) $head .= ' · ' . $r['skipped'] . ' skipped';
+        return $head;
+    }
+
+    // POST /communications — send an ad-hoc broadcast.
+    public static function send(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $subject  = trim((string)($b['subject'] ?? ''));
+        $message  = trim((string)($b['body'] ?? $b['message'] ?? ''));
+        $audience = (string)($b['audience'] ?? '');
+        $classId  = isset($b['class_id']) && $b['class_id'] !== '' ? (int)$b['class_id'] : null;
+        $channels = array_values(array_intersect(['email', 'whatsapp'], (array)($b['channels'] ?? ['email'])));
+        if ($message === '')                           respond(null, 422, 'Message body is required.');
+        if (!in_array($audience, self::AUDIENCES, true)) respond(null, 422, 'Choose a valid audience.');
+        if (!$channels)                                respond(null, 422, 'Choose at least one channel (email or WhatsApp).');
+        $res = self::dispatch($user, $subject, $message, $audience, $classId, $channels, 'notice');
+        respond($res, 201, self::summaryMsg($res));
+    }
+
+    // GET /communications — recent broadcast history.
+    public static function history(array $user): void {
+        Perm::assertAdmin($user);
+        respond(DB::query(
+            "SELECT c.*, CONCAT(u.first_name,' ',u.last_name) sender, cl.name class_name
+               FROM communications c LEFT JOIN users u ON u.id=c.sender_id LEFT JOIN classes cl ON cl.id=c.class_id
+              WHERE c.school_id=? ORDER BY c.id DESC LIMIT 50", [(int)$user['school_id']]));
+    }
+
+    // ── Events ──────────────────────────────────────────────────────────────────
+    public static function events(array $user): void {
+        Perm::assertAdmin($user);
+        respond(DB::query(
+            "SELECT e.*, cl.name class_name FROM events e LEFT JOIN classes cl ON cl.id=e.class_id
+              WHERE e.school_id=? AND e.deleted_at IS NULL ORDER BY e.event_date DESC, e.id DESC", [(int)$user['school_id']]));
+    }
+
+    public static function saveEvent(array $user, ?int $id = null): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id']; $b = body();
+        $title = trim((string)($b['title'] ?? ''));
+        $date  = trim((string)($b['event_date'] ?? ''));
+        if ($title === '' || $date === '' || strtotime($date) === false) respond(null, 422, 'Event title and a valid date are required.');
+        $audience = in_array($b['audience'] ?? '', self::AUDIENCES, true) ? $b['audience'] : 'all_guardians';
+        $classId  = isset($b['class_id']) && $b['class_id'] !== '' ? (int)$b['class_id'] : null;
+        $desc     = trim((string)($b['description'] ?? ''));
+        if ($id) {
+            if (!DB::one('SELECT id FROM events WHERE id=? AND school_id=? AND deleted_at IS NULL', [$id, $sid]))
+                respond(null, 404, 'Event not found.');
+            DB::run('UPDATE events SET title=?,description=?,event_date=?,audience=?,class_id=? WHERE id=? AND school_id=?',
+                [$title, $desc, $date, $audience, $classId, $id, $sid]);
+            respond(['id' => $id], 200, 'Event updated');
+        }
+        $newId = DB::exec('INSERT INTO events (school_id,title,description,event_date,audience,class_id,created_by) VALUES (?,?,?,?,?,?,?)',
+            [$sid, $title, $desc, $date, $audience, $classId, (int)$user['id']]);
+        respond(['id' => $newId], 201, 'Event created');
+    }
+
+    public static function deleteEvent(array $user, int $id): void {
+        Perm::assertAdmin($user);
+        DB::run('UPDATE events SET deleted_at=NOW() WHERE id=? AND school_id=?', [$id, (int)$user['school_id']]);
+        respond(['deleted' => true]);
+    }
+
+    // POST /communications/events/{id}/remind — broadcast a reminder for an event.
+    public static function sendReminder(array $user, int $id): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id'];
+        $e = DB::one('SELECT * FROM events WHERE id=? AND school_id=? AND deleted_at IS NULL', [$id, $sid]);
+        if (!$e) respond(null, 404, 'Event not found.');
+        $channels = array_values(array_intersect(['email', 'whatsapp'], (array)(body()['channels'] ?? ['email'])));
+        if (!$channels) respond(null, 422, 'Choose at least one channel.');
+        $when    = date('l, j M Y', strtotime($e['event_date']));
+        $subject = 'Reminder: ' . $e['title'];
+        $message = "This is a reminder about \"{$e['title']}\", scheduled for {$when}."
+                 . ($e['description'] ? "\n\n" . $e['description'] : '');
+        $res = self::dispatch($user, $subject, $message, $e['audience'],
+            $e['class_id'] !== null ? (int)$e['class_id'] : null, $channels, 'reminder', $id);
+        DB::run('UPDATE events SET reminder_sent_at=NOW() WHERE id=?', [$id]);
+        respond($res, 201, self::summaryMsg($res));
+    }
+
+    // GET /communications/parent-preview/{studentId} — read-only snapshot of a parent's view.
+    public static function parentPreview(array $user, int $studentId): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id'];
+        $s = DB::one(
+            "SELECT s.id, s.student_id, s.guardian_name, s.guardian_email, s.guardian_phone,
+                    CONCAT(u.first_name,' ',u.last_name) name, c.name class_name, c.id class_id
+               FROM students s JOIN users u ON u.id=s.user_id JOIN classes c ON c.id=s.class_id
+              WHERE s.id=? AND u.school_id=? AND s.deleted_at IS NULL", [$studentId, $sid]);
+        if (!$s) respond(null, 404, 'Student not found.');
+        $term = DB::one('SELECT t.id,t.name FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id
+                          WHERE ay.school_id=? ORDER BY t.is_current DESC, t.id DESC LIMIT 1', [$sid]);
+        $termId = (int)($term['id'] ?? 0);
+        $att = DB::one("SELECT COUNT(*) total, COALESCE(SUM(status NOT LIKE 'absent%'),0) present
+                          FROM attendance WHERE student_id=? AND term_id=?", [$studentId, $termId]);
+        $fees = DB::one('SELECT COALESCE(SUM(total_amount),0) invoiced, COALESCE(SUM(amount_paid),0) paid, COALESCE(SUM(balance),0) balance
+                           FROM invoices WHERE student_id=?', [$studentId]);
+        $subjects = DB::query(
+            "SELECT sub.name subject, SUM(g.score) total FROM grades g JOIN subjects sub ON sub.id=g.subject_id
+              WHERE g.student_id=? AND g.term_id=? GROUP BY g.subject_id, sub.name ORDER BY sub.name", [$studentId, $termId]);
+        $tot = (int)($att['total'] ?? 0); $pre = (int)($att['present'] ?? 0);
+        respond([
+            'student'    => $s,
+            'term'       => $term,
+            'attendance' => ['present' => $pre, 'total' => $tot, 'rate' => $tot ? round(100 * $pre / $tot, 1) : null],
+            'fees'       => $fees ?: ['invoiced' => 0, 'paid' => 0, 'balance' => 0],
+            'subjects'   => $subjects,
+        ]);
+    }
+}

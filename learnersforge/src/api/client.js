@@ -209,6 +209,17 @@ export const gradeAssignment      = (subId, data) => api.post(`/assignment-submi
 export const getMyOnlineAssignments = () => api.get('/my/assignments');
 export const submitMyAssignment     = data => api.post('/my/assignment-submit', data);
 
+// ── Communications (email + WhatsApp broadcasts, reminders, parent preview) ─────
+export const getAudiences        = () => api.get('/communications/audiences');
+export const getCommunications   = () => api.get('/communications');
+export const sendCommunication   = data => api.post('/communications', data);
+export const getEvents           = () => api.get('/communications/events');
+export const saveEvent           = data => api.post('/communications/events', data);
+export const updateEvent         = (id, data) => api.put(`/communications/events/${id}`, data);
+export const deleteEvent         = id => api.delete(`/communications/events/${id}`);
+export const sendEventReminder   = (id, data) => api.post(`/communications/events/${id}/remind`, data);
+export const getParentPreview    = studentId => api.get(`/communications/parent-preview/${studentId}`);
+
 // ── Library ───────────────────────────────────────────────────────────────────
 export const getBooks      = () => api.get('/library/books');
 export const getLoans      = () => api.get('/library/loans');

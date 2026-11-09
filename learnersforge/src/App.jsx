@@ -17,6 +17,7 @@ import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadshe
          getStaffAttendance, saveStaffAttendance as apiSaveStaffAttendance, getLeave, requestLeave, decideLeave, getHrPayroll, savePayroll, markPayrollPaid,
          getPerfAnalytics, getAttAnalytics, getFinanceAnalytics, getAdmissionAnalytics,
          getAssignments, createAssignment, updateAssignment, deleteAssignment, getAssignmentSubmissions, gradeAssignment, getMyOnlineAssignments, submitMyAssignment,
+         getAudiences, getCommunications, sendCommunication, getEvents, saveEvent as apiSaveEvent, updateEvent, deleteEvent as apiDeleteEvent, sendEventReminder, getParentPreview,
          login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
@@ -7217,131 +7218,347 @@ const SubmissionsView = ({ view, onBack, flash }) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 10. COMMUNICATION EXTRAS — SMS Notifications, Event Reminders, Parent Portal Preview
 // ═══════════════════════════════════════════════════════════════════════════════
-const Communications = () => {
-  const [tab, setTab] = useState("sms");
-  const [smsModal, setSmsModal] = useState(false);
+const AUD_LABELS = { all_guardians:"All Guardians", class_guardians:"Guardians of a Class", all_staff:"All Staff" };
 
-  const smsLogs = [
-    {id:"S001",recipient:"All Parents",    message:"Reminder: School fees for 2nd term are due by May 31.",  sent:1284,delivered:1270,date:"2026-05-20 9:00 AM",status:"Delivered"},
-    {id:"S002",recipient:"SSS 3 Parents", message:"Final exams commence June 15. Please ensure wards prepare.",sent:120, delivered:118, date:"2026-05-18 2:30 PM",status:"Delivered"},
-    {id:"S003",recipient:"JSS 3A Parents",message:"Kofi Mensah was marked absent today without explanation.",    sent:1,   delivered:1,   date:"2026-05-17 8:45 AM",status:"Delivered"},
-  ];
-  const reminders = [
-    {id:"R001",event:"End of Term Exams",    date:"Jun 15, 2026",  sendDate:"Jun 8, 2026",  audience:"All Parents & Students",  status:"Scheduled"},
-    {id:"R002",event:"Prize Giving Day",     date:"Jul 5, 2026",   sendDate:"Jun 28, 2026", audience:"All Parents",             status:"Scheduled"},
-    {id:"R003",event:"School Fees Deadline", date:"May 31, 2026",  sendDate:"May 25, 2026", audience:"Owing Parents",           status:"Sent"},
-    {id:"R004",event:"New Session Resumption",date:"Sep 8, 2026",  sendDate:"Sep 1, 2026",  audience:"All Parents & Students",  status:"Pending"},
-  ];
+const Communications = () => {
+  const [tab, setTab]         = useState("broadcast");
+  const [aud, setAud]         = useState(null);      // {all_guardians, all_staff, classes, whatsapp_configured}
+  const [history, setHistory] = useState([]);
+  const [events, setEvents]   = useState([]);
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [evtModal, setEvtModal]   = useState(null);  // {} = new, event obj = edit
+  const [remindFor, setRemindFor] = useState(null);  // event being reminded
+  const [previewId, setPreviewId] = useState("");
+  const [preview, setPreview]     = useState(null);
+  const [toast, setToast]     = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 3600); };
+
+  const [form, setForm] = useState({ audience:"all_guardians", class_id:"", subject:"", body:"", email:true, whatsapp:false });
+  const setF = patch => setForm(f => ({ ...f, ...patch }));
+
+  const waOn    = !!aud?.whatsapp_configured;
+  const classes = aud?.classes || [];
+
+  const loadAud     = () => getAudiences().then(r => setAud(r?.data || null)).catch(() => setAud(null));
+  const loadHistory = () => getCommunications().then(r => setHistory(arrOf(r))).catch(() => setHistory([]));
+  const loadEvents  = () => getEvents().then(r => setEvents(arrOf(r))).catch(() => setEvents([]));
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setLoading(true);
+      try {
+        await Promise.all([loadAud(), loadHistory(), loadEvents()]);
+        const st = await getStudents({ per_page: 200, sort: "class" }).then(r => arrOf(r, "students")).catch(() => []);
+        if (!dead) setStudents(st);
+      } finally { if (!dead) setLoading(false); }
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  const audCount = (a, classId) => {
+    if (a === "all_staff") return aud?.all_staff ?? 0;
+    if (a === "class_guardians") { const c = classes.find(c => String(c.id) === String(classId)); return c ? Number(c.students) : 0; }
+    return aud?.all_guardians ?? 0;
+  };
+  const channelsOf = f => [f.email && "email", f.whatsapp && "whatsapp"].filter(Boolean);
+
+  const submit = async () => {
+    const chans = channelsOf(form);
+    if (!form.body.trim())  return flash("Enter a message to send.");
+    if (chans.length === 0) return flash("Pick at least one channel (Email or WhatsApp).");
+    if (form.audience === "class_guardians" && !form.class_id) return flash("Pick a class for this audience.");
+    setSending(true);
+    try {
+      const r = await sendCommunication({
+        subject: form.subject, body: form.body, audience: form.audience,
+        class_id: form.audience === "class_guardians" ? form.class_id : "", channels: chans,
+      });
+      flash(r?.message || "Broadcast sent.");
+      setF({ subject:"", body:"" });
+      loadHistory();
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not send the broadcast."); }
+    finally { setSending(false); }
+  };
+
+  const removeEvent = async ev => {
+    if (!window.confirm(`Delete event "${ev.title}"?`)) return;
+    try { await apiDeleteEvent(ev.id); flash("Event deleted."); loadEvents(); }
+    catch (e) { flash(e?.message || "Could not delete event."); }
+  };
+
+  const openPreview = async sid => {
+    setPreviewId(sid); setPreview(null);
+    if (!sid) return;
+    try { const r = await getParentPreview(sid); setPreview(r?.data || null); }
+    catch (e) { flash(e?.message || "Could not load preview."); }
+  };
+
+  const chTag = ch => ch.split(",").map(c => c === "whatsapp" ? "💬" : "📧").join(" ");
+  const naira = n => "₦" + Number(n || 0).toLocaleString();
 
   return (
     <div className="fi">
-      <Tabs tabs={[{id:"sms",label:"📱 SMS Notifications"},{id:"reminders",label:"⏰ Event Reminders"},{id:"parentportal",label:"👨‍👩‍👧 Parent Portal Preview"}]} active={tab} onChange={setTab}/>
+      <Tabs tabs={[{id:"broadcast",label:"📣 Broadcast"},{id:"reminders",label:"⏰ Event Reminders"},{id:"parentportal",label:"👨‍👩‍👧 Parent Preview"}]} active={tab} onChange={setTab}/>
       <div style={{marginTop:16}}>
+        {loading ? <Card style={{textAlign:"center",color:C.textMuted,padding:"44px"}}>Loading communications…</Card> : <>
 
-        {tab==="sms" && (
+        {/* ── BROADCAST ──────────────────────────────────────────────────── */}
+        {tab==="broadcast" && (
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:11}}>
-                <StatCard label="SMS Sent This Month"   value="2,847" color={C.sky}    icon="📱"/>
-                <StatCard label="Delivery Rate"         value="98.7%" color={C.accent} icon="✅"/>
-                <StatCard label="SMS Balance (Units)"   value="4,200" color={C.amber}  icon="💳"/>
-              </div>
-              <Btn variant="primary" onClick={()=>setSmsModal(true)}>📱 Send SMS</Btn>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:11,marginBottom:16}}>
+              <StatCard label="Guardians Reachable" value={aud?.all_guardians ?? 0}        color={C.sky}    icon="👨‍👩‍👧"/>
+              <StatCard label="Staff Reachable"      value={aud?.all_staff ?? 0}            color={C.accent} icon="🧑‍🏫"/>
+              <StatCard label="WhatsApp"             value={waOn?"Connected":"Email only"}  sub={waOn?"Twilio ready":"Add Twilio config"} color={waOn?C.teal:C.amber} icon="💬"/>
             </div>
-            <Card style={{padding:0}}>
-              <table style={{width:"100%",borderCollapse:"collapse"}}>
-                <thead><tr style={{background:"#F8FAFC"}}>{["Recipient","Message Preview","Sent","Delivered","Date","Status"].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {smsLogs.map(s=>(
-                    <tr key={s.id} style={{borderBottom:`1px solid ${C.border}`}} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{s.recipient}</td>
-                      <td style={{padding:"10px 13px",fontSize:12,color:C.textMid,maxWidth:240}}><div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.message}</div></td>
-                      <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{s.sent}</td>
-                      <td style={{padding:"10px 13px",fontSize:12,fontWeight:600,color:C.accentDark}}>{s.delivered}</td>
-                      <td style={{padding:"10px 13px",fontSize:11,color:C.textMuted}}>{s.date}</td>
-                      <td style={{padding:"10px 13px"}}><Badge color="green" size="sm">{s.status}</Badge></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Card>
+
+            <div style={{display:"grid",gridTemplateColumns:"minmax(0,1.3fr) minmax(0,1fr)",gap:14,alignItems:"start"}}>
+              <Card>
+                <div style={{fontSize:14,fontWeight:800,marginBottom:14}}>Compose a message</div>
+                <div style={{display:"grid",gridTemplateColumns:form.audience==="class_guardians"?"1fr 1fr":"1fr",gap:11,marginBottom:11}}>
+                  <Sel label="Audience" value={form.audience} onChange={v=>setF({audience:v})}
+                       options={Object.entries(AUD_LABELS).map(([value,label])=>({value,label}))}/>
+                  {form.audience==="class_guardians" && (
+                    <Sel label="Class" value={form.class_id} onChange={v=>setF({class_id:v})}
+                         options={[{value:"",label:"Select class…"},...classes.map(c=>({value:String(c.id),label:`${c.name} (${c.students})`}))]}/>
+                  )}
+                </div>
+                <div style={{marginBottom:11}}>
+                  <Input label="Subject (optional)" value={form.subject} onChange={v=>setF({subject:v})} placeholder="e.g. 2nd Term Fees Reminder"/>
+                </div>
+                <label style={{fontSize:11,fontWeight:700,color:C.textMid,letterSpacing:".4px",textTransform:"uppercase"}}>Message</label>
+                <textarea value={form.body} onChange={e=>setF({body:e.target.value})} placeholder="Type your message to parents or staff…"
+                  style={{width:"100%",minHeight:120,marginTop:4,padding:"10px 12px",borderRadius:8,border:`1px solid ${C.border}`,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical",boxSizing:"border-box"}}/>
+
+                <div style={{display:"flex",alignItems:"center",gap:18,margin:"14px 0 4px",flexWrap:"wrap"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.textMid,letterSpacing:".4px",textTransform:"uppercase"}}>Channels</div>
+                  <label style={{display:"flex",alignItems:"center",gap:7,fontSize:13,cursor:"pointer"}}>
+                    <input type="checkbox" checked={form.email} onChange={e=>setF({email:e.target.checked})}/> 📧 Email
+                  </label>
+                  <label style={{display:"flex",alignItems:"center",gap:7,fontSize:13,cursor:waOn?"pointer":"not-allowed",opacity:waOn?1:.5}} title={waOn?"":"Add config/twilio.php on the server to enable WhatsApp"}>
+                    <input type="checkbox" checked={form.whatsapp} disabled={!waOn} onChange={e=>setF({whatsapp:e.target.checked})}/> 💬 WhatsApp
+                  </label>
+                </div>
+                {!waOn && <div style={{fontSize:11.5,color:C.textMuted,marginBottom:4}}>WhatsApp is off until Twilio is configured on the server. Email works now.</div>}
+
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:14,borderTop:`1px solid ${C.border}`,paddingTop:14}}>
+                  <div style={{fontSize:12.5,color:C.textMid}}>Sending to <b style={{color:C.text}}>{audCount(form.audience,form.class_id)}</b> recipient(s)</div>
+                  <Btn variant="primary" onClick={submit} disabled={sending}>{sending?"Sending…":"📤 Send Broadcast"}</Btn>
+                </div>
+              </Card>
+
+              <Card style={{padding:"16px 18px"}}>
+                <div style={{fontSize:13,fontWeight:800,marginBottom:12}}>Recent broadcasts</div>
+                {history.length===0 ? (
+                  <div style={{fontSize:12.5,color:C.textMuted,padding:"20px 0",textAlign:"center"}}>No messages sent yet.</div>
+                ) : (
+                  <div style={{display:"flex",flexDirection:"column",gap:10,maxHeight:430,overflowY:"auto"}}>
+                    {history.map(m=>(
+                      <div key={m.id} style={{border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 12px"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center",marginBottom:4}}>
+                          <div style={{fontSize:12.5,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.subject||"(no subject)"}</div>
+                          <Badge color={m.kind==="reminder"?"amber":"blue"} size="sm">{m.kind}</Badge>
+                        </div>
+                        <div style={{fontSize:11.5,color:C.textMid,marginBottom:6,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{m.body}</div>
+                        <div style={{display:"flex",gap:10,flexWrap:"wrap",fontSize:11,color:C.textMuted}}>
+                          <span>{chTag(m.channels)}</span>
+                          <span>{AUD_LABELS[m.audience]||m.audience}{m.class_name?` · ${m.class_name}`:""}</span>
+                          <span style={{color:C.accentDark}}>✓ {Number(m.sent_email)+Number(m.sent_whatsapp)} sent</span>
+                          {Number(m.failed)>0 && <span style={{color:C.coral}}>✗ {m.failed} failed</span>}
+                          {Number(m.skipped)>0 && <span>– {m.skipped} skipped</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </div>
           </div>
         )}
 
+        {/* ── EVENT REMINDERS ────────────────────────────────────────────── */}
         {tab==="reminders" && (
           <div>
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn variant="primary">+ Add Reminder</Btn></div>
-            <div style={{display:"flex",flexDirection:"column",gap:11}}>
-              {reminders.map(r=>(
-                <Card key={r.id} style={{display:"flex",gap:14,alignItems:"center"}}>
-                  <div style={{width:46,height:46,borderRadius:11,background:r.status==="Sent"?C.accentLight:r.status==="Scheduled"?C.skyLight:C.amberLight,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>⏰</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:700}}>{r.event}</div>
-                    <div style={{fontSize:11,color:C.textMuted,marginTop:3}}>Event: {r.date} · Send reminder: {r.sendDate}</div>
-                    <div style={{fontSize:11,color:C.textMid,marginTop:2}}>To: {r.audience}</div>
-                  </div>
-                  <Badge color={r.status==="Sent"?"green":r.status==="Scheduled"?"blue":"amber"} size="sm">{r.status}</Badge>
-                  <div style={{display:"flex",gap:7}}><Btn size="sm" variant="ghost">✏️</Btn>{r.status!=="Sent"&&<Btn size="sm" variant="secondary">Send Now</Btn>}</div>
-                </Card>
-              ))}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div style={{fontSize:13,color:C.textMid}}>Create events, then send a reminder to the right audience over email or WhatsApp.</div>
+              <Btn variant="primary" onClick={()=>setEvtModal({})}>+ Add Event</Btn>
             </div>
+            {events.length===0 ? (
+              <Card style={{textAlign:"center",padding:"48px 16px"}}><div style={{fontSize:34,marginBottom:10}}>⏰</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No events yet</div><div style={{fontSize:13,color:C.textMid}}>Add an event to schedule reminders.</div></Card>
+            ) : (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:13}}>
+                {events.map(ev=>{
+                  const past = new Date(ev.event_date) < new Date(new Date().toDateString());
+                  return (
+                  <Card key={ev.id}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                      <div>
+                        <div style={{fontSize:14,fontWeight:700}}>{ev.title}</div>
+                        <div style={{fontSize:11.5,color:C.textMuted,marginTop:2}}>📅 {new Date(ev.event_date).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short",year:"numeric"})}</div>
+                      </div>
+                      <Badge color={past?"gray":"green"} size="sm">{past?"Past":"Upcoming"}</Badge>
+                    </div>
+                    {ev.description && <div style={{fontSize:12.5,color:C.textMid,marginBottom:10,display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{ev.description}</div>}
+                    <div style={{fontSize:11.5,color:C.textMuted,marginBottom:10}}>👥 {AUD_LABELS[ev.audience]||ev.audience}{ev.class_name?` · ${ev.class_name}`:""}</div>
+                    {ev.reminder_sent_at && <div style={{fontSize:11,color:C.accentDark,marginBottom:10}}>✓ Reminder sent {new Date(ev.reminder_sent_at).toLocaleDateString("en-GB")}</div>}
+                    <div style={{display:"flex",gap:8,borderTop:`1px solid ${C.border}`,paddingTop:11}}>
+                      <Btn size="sm" variant="primary" onClick={()=>setRemindFor(ev)}>📤 Send Reminder</Btn>
+                      <Btn size="sm" variant="secondary" onClick={()=>setEvtModal(ev)}>Edit</Btn>
+                      <Btn size="sm" variant="ghost" onClick={()=>removeEvent(ev)}>Delete</Btn>
+                    </div>
+                  </Card>
+                );})}
+              </div>
+            )}
           </div>
         )}
 
+        {/* ── PARENT PORTAL PREVIEW ──────────────────────────────────────── */}
         {tab==="parentportal" && (
           <div>
-            <div style={{padding:"11px 14px",borderRadius:10,background:C.amberLight,fontSize:12,color:"#92400E",fontWeight:600,marginBottom:16}}>👁 This is a preview of what parents see when they log into their portal.</div>
-            {/* Simulated parent portal */}
-            <div style={{border:`2px solid ${C.border}`,borderRadius:14,overflow:"hidden",maxWidth:680,margin:"0 auto"}}>
-              <div style={{background:C.navy,padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div style={{color:"#fff",fontSize:14,fontWeight:700}}>Parent Portal — Mrs. Grace Okonkwo</div>
-                <div style={{color:"#8DA4C0",fontSize:11}}>Viewing: Amara Okonkwo · JSS 3A</div>
+            <Card style={{marginBottom:14}}>
+              <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}>
+                <Sel label="Preview a student's parent view" value={previewId} onChange={openPreview} style={{minWidth:280}}
+                     options={[{value:"",label:"Select a student…"},...students.map(s=>({value:String(s.id),label:`${[s.first_name,s.last_name].filter(Boolean).join(" ")} — ${s.class_name||s.student_id}`}))]}/>
+                <div style={{fontSize:12,color:C.textMuted,paddingBottom:8}}>A read-only snapshot of what a parent sees for their child.</div>
               </div>
-              <div style={{padding:"18px 20px",background:"#F8FAFC",display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:11,marginBottom:2}}>
-                {[["Avg Score","78%",C.accent,"📊"],["Attendance","94%",C.sky,"✅"],["Fee Balance","₦0",C.accentDark,"💳"],["Rank","3rd / 42",C.purple,"🏆"]].map(([l,v,c,ic])=>(
-                  <div key={l} style={{padding:"11px 13px",background:"#fff",borderRadius:10,border:`1px solid ${C.border}`,textAlign:"center"}}>
-                    <div style={{fontSize:16,marginBottom:4}}>{ic}</div>
-                    <div style={{fontSize:17,fontWeight:700,color:c}}>{v}</div>
-                    <div style={{fontSize:10,color:C.textMuted,marginTop:2}}>{l}</div>
+            </Card>
+            {!previewId ? (
+              <Card style={{textAlign:"center",padding:"48px 16px"}}><div style={{fontSize:34,marginBottom:10}}>👨‍👩‍👧</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>Select a student above</div><div style={{fontSize:13,color:C.textMid}}>See their guardian, attendance, results and fee summary.</div></Card>
+            ) : !preview ? (
+              <Card style={{textAlign:"center",color:C.textMuted,padding:"40px"}}>Loading preview…</Card>
+            ) : (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:13}}>
+                <Card>
+                  <div style={{fontSize:11,fontWeight:700,color:C.textMuted,textTransform:"uppercase",letterSpacing:".4px",marginBottom:10}}>Student</div>
+                  <div style={{display:"flex",gap:11,alignItems:"center",marginBottom:12}}>
+                    <Avatar initials={(preview.student.name||"?").split(" ").map(x=>x[0]).slice(0,2).join("")} size={46}/>
+                    <div><div style={{fontSize:14,fontWeight:700}}>{preview.student.name}</div><div style={{fontSize:11.5,color:C.textMuted}}>{preview.student.class_name} · {preview.student.student_id}</div></div>
                   </div>
-                ))}
-              </div>
-              <div style={{padding:"14px 20px",background:"#fff"}}>
-                <div style={{fontSize:12,fontWeight:700,marginBottom:11}}>Recent Results</div>
-                {SUBJECTS.slice(0,4).map((s,i)=>(
-                  <div key={s} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:`1px solid ${C.border}`,fontSize:12}}>
-                    <span style={{fontWeight:500}}>{s}</span>
-                    <div style={{display:"flex",gap:11,alignItems:"center"}}>
-                      <span style={{fontWeight:700,color:65+i*5>=70?C.accentDark:C.amber}}>{65+i*5}%</span>
-                      <Badge color={65+i*5>=70?"green":"amber"} size="sm">{"ABCDE"[Math.floor((100-(65+i*5))/10)]}{"123456789"[Math.floor((100-(65+i*5))/10)]}</Badge>
+                  <div style={{fontSize:12.5,color:C.textMid,lineHeight:1.9}}>
+                    <div><b style={{color:C.text}}>Guardian:</b> {preview.student.guardian_name||"—"}</div>
+                    <div><b style={{color:C.text}}>Email:</b> {preview.student.guardian_email||"—"}</div>
+                    <div><b style={{color:C.text}}>Phone:</b> {preview.student.guardian_phone||"—"}</div>
+                  </div>
+                </Card>
+                <Card>
+                  <div style={{fontSize:11,fontWeight:700,color:C.textMuted,textTransform:"uppercase",letterSpacing:".4px",marginBottom:10}}>Attendance {preview.term?.name?`· ${preview.term.name}`:""}</div>
+                  <div style={{fontSize:30,fontWeight:800,color:C.sky}}>{preview.attendance.rate!=null?`${preview.attendance.rate}%`:"—"}</div>
+                  <div style={{fontSize:12.5,color:C.textMid,marginTop:4}}>Present {preview.attendance.present} of {preview.attendance.total} recorded days</div>
+                </Card>
+                <Card>
+                  <div style={{fontSize:11,fontWeight:700,color:C.textMuted,textTransform:"uppercase",letterSpacing:".4px",marginBottom:10}}>Fees</div>
+                  <div style={{fontSize:12.5,color:C.textMid,lineHeight:2}}>
+                    <div style={{display:"flex",justifyContent:"space-between"}}><span>Invoiced</span><b style={{color:C.text}}>{naira(preview.fees.invoiced)}</b></div>
+                    <div style={{display:"flex",justifyContent:"space-between"}}><span>Paid</span><b style={{color:C.accentDark}}>{naira(preview.fees.paid)}</b></div>
+                    <div style={{display:"flex",justifyContent:"space-between",borderTop:`1px solid ${C.border}`,paddingTop:6,marginTop:4}}><span>Balance</span><b style={{color:Number(preview.fees.balance)>0?C.coral:C.text}}>{naira(preview.fees.balance)}</b></div>
+                  </div>
+                </Card>
+                <Card style={{gridColumn:"1 / -1"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.textMuted,textTransform:"uppercase",letterSpacing:".4px",marginBottom:10}}>Results {preview.term?.name?`· ${preview.term.name}`:""}</div>
+                  {preview.subjects.length===0 ? <div style={{fontSize:12.5,color:C.textMuted}}>No scores recorded for this term yet.</div> : (
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:8}}>
+                      {preview.subjects.map((s,i)=>(
+                        <div key={i} style={{display:"flex",justifyContent:"space-between",border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 11px",fontSize:12.5}}>
+                          <span style={{color:C.textMid,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.subject}</span><b>{Math.round(Number(s.total))}</b>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                ))}
-                <div style={{display:"flex",gap:9,marginTop:14}}>
-                  <Btn size="sm" variant="secondary" style={{flex:1,justifyContent:"center"}}>💳 Pay Fees</Btn>
-                  <Btn size="sm" variant="primary"  style={{flex:1,justifyContent:"center"}}>💬 Message Teacher</Btn>
-                </div>
+                  )}
+                </Card>
               </div>
-            </div>
+            )}
           </div>
         )}
+        </>}
       </div>
 
-      {smsModal&&<Modal title="📱 Send SMS Notification" onClose={()=>setSmsModal(false)} width={500}>
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <Sel label="Send To" value="all-parents" onChange={()=>{}} options={[{value:"all-parents",label:"All Parents"},{value:"all-students",label:"All Students"},{value:"class-parents",label:"Specific Class Parents"},{value:"debtors",label:"Owing Parents Only"},{value:"individual",label:"Individual"}]}/>
-          <Sel label="Class (if applicable)" value="all" onChange={()=>{}} options={[{value:"all",label:"All Classes"},...CLASSES.map(c=>({value:c,label:c}))]}/>
-          <div>
-            <label style={{fontSize:11,fontWeight:700,color:C.textMid,textTransform:"uppercase",letterSpacing:".4px",display:"block",marginBottom:4}}>Message</label>
-            <textarea placeholder="Type your SMS message here… (max 160 characters)" maxLength={160} style={{width:"100%",padding:"9px 11px",borderRadius:8,border:`1px solid ${C.border}`,fontSize:13,minHeight:80,resize:"none",outline:"none",fontFamily:"Sora,sans-serif"}} onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
-            <div style={{fontSize:10,color:C.textMuted,textAlign:"right",marginTop:3}}>0/160 characters · Est. recipients: 1,284</div>
-          </div>
-          <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setSmsModal(false)}>Cancel</Btn><Btn variant="primary" onClick={()=>setSmsModal(false)}>📱 Send SMS</Btn></div>
-        </div>
-      </Modal>}
+      {evtModal && <EventModal event={evtModal} classes={classes} waOn={waOn}
+        onClose={()=>setEvtModal(null)} onDone={()=>{setEvtModal(null); loadEvents();}} flash={flash}/>}
+      {remindFor && <ReminderModal event={remindFor} waOn={waOn}
+        onClose={()=>setRemindFor(null)} onDone={()=>{setRemindFor(null); loadEvents(); loadHistory();}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600,maxWidth:360}}>{toast}</div>}
     </div>
   );
 };
+
+// Create / edit a school event.
+const EventModal = ({ event, classes, onClose, onDone, flash }) => {
+  const isEdit = !!event.id;
+  const [f, setF] = useState({
+    title: event.title || "", description: event.description || "",
+    event_date: event.event_date ? String(event.event_date).slice(0,10) : "",
+    audience: event.audience || "all_guardians", class_id: event.class_id ? String(event.class_id) : "",
+  });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!f.title.trim() || !f.event_date) return flash("Event title and date are required.");
+    if (f.audience==="class_guardians" && !f.class_id) return flash("Pick a class for this audience.");
+    setSaving(true);
+    try {
+      const payload = { ...f, class_id: f.audience==="class_guardians" ? f.class_id : "" };
+      if (isEdit) await updateEvent(event.id, payload); else await apiSaveEvent(payload);
+      flash(isEdit?"Event updated.":"Event created."); onDone();
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not save event."); setSaving(false); }
+  };
+  return (
+    <Modal title={isEdit?"Edit Event":"Add Event"} onClose={onClose} width={520}>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <Input label="Event title" value={f.title} onChange={v=>setF(s=>({...s,title:v}))} placeholder="e.g. End of Term Exams"/>
+        <div style={{display:"grid",gridTemplateColumns:f.audience==="class_guardians"?"1fr 1fr":"1fr",gap:11}}>
+          <Input label="Date" type="date" value={f.event_date} onChange={v=>setF(s=>({...s,event_date:v}))}/>
+          {f.audience==="class_guardians" && (
+            <Sel label="Class" value={f.class_id} onChange={v=>setF(s=>({...s,class_id:v}))}
+                 options={[{value:"",label:"Select class…"},...classes.map(c=>({value:String(c.id),label:c.name}))]}/>
+          )}
+        </div>
+        <Sel label="Reminder audience" value={f.audience} onChange={v=>setF(s=>({...s,audience:v}))}
+             options={Object.entries(AUD_LABELS).map(([value,label])=>({value,label}))}/>
+        <div>
+          <label style={{fontSize:11,fontWeight:700,color:C.textMid,letterSpacing:".4px",textTransform:"uppercase"}}>Description (optional)</label>
+          <textarea value={f.description} onChange={e=>setF(s=>({...s,description:e.target.value}))} placeholder="Details included in the reminder message…"
+            style={{width:"100%",minHeight:84,marginTop:4,padding:"10px 12px",borderRadius:8,border:`1px solid ${C.border}`,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical",boxSizing:"border-box"}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}>
+          <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":isEdit?"Save Changes":"Create Event"}</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+// Pick channels and send a reminder for an event.
+const ReminderModal = ({ event, waOn, onClose, onDone, flash }) => {
+  const [email, setEmail] = useState(true);
+  const [whatsapp, setWhatsapp] = useState(false);
+  const [sending, setSending] = useState(false);
+  const send = async () => {
+    const chans = [email && "email", whatsapp && "whatsapp"].filter(Boolean);
+    if (chans.length===0) return flash("Pick at least one channel.");
+    setSending(true);
+    try { const r = await sendEventReminder(event.id, { channels: chans }); flash(r?.message || "Reminder sent."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not send reminder."); setSending(false); }
+  };
+  return (
+    <Modal title={`Send reminder: ${event.title}`} onClose={onClose} width={460}>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:14}}>
+        A reminder for <b style={{color:C.text}}>{event.title}</b> ({new Date(event.event_date).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}) will be sent to <b style={{color:C.text}}>{AUD_LABELS[event.audience]||event.audience}</b>{event.class_name?` · ${event.class_name}`:""}.
+      </div>
+      <div style={{display:"flex",gap:18,marginBottom:16,flexWrap:"wrap"}}>
+        <label style={{display:"flex",alignItems:"center",gap:7,fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={email} onChange={e=>setEmail(e.target.checked)}/> 📧 Email</label>
+        <label style={{display:"flex",alignItems:"center",gap:7,fontSize:13,cursor:waOn?"pointer":"not-allowed",opacity:waOn?1:.5}} title={waOn?"":"Twilio not configured"}><input type="checkbox" checked={whatsapp} disabled={!waOn} onChange={e=>setWhatsapp(e.target.checked)}/> 💬 WhatsApp</label>
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:9}}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn variant="primary" onClick={send} disabled={sending}>{sending?"Sending…":"📤 Send Reminder"}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 11. REPORTS & ANALYTICS (enhanced)

@@ -1,0 +1,19 @@
+<?php
+// config/twilio.php  — Twilio credentials for WhatsApp notifications.
+// Copy this file to config/twilio.php on the server and fill in the real values.
+// The real config/twilio.php is git-ignored and is never overwritten by a deploy.
+//
+// WhatsApp is OPTIONAL. If this file is missing, or the values below are left as
+// placeholders, WhatsApp sends are simply skipped (and reported as "skipped") —
+// email notifications keep working with no configuration at all.
+return [
+    'account_sid'  => 'YOUR_TWILIO_ACCOUNT_SID',   // starts with AC...
+    'auth_token'   => 'YOUR_TWILIO_AUTH_TOKEN',
+    // WhatsApp sender — the Twilio sandbox number, or your approved WhatsApp
+    // Business number. Give the bare number; the 'whatsapp:' prefix is added for you.
+    'whatsapp_from' => '+14155238886',
+    // Default country code for local numbers typed without one (Nigeria = 234,
+    // so 0803... becomes +234803...).
+    'default_country' => '234',
+    'timeout' => 20,
+];

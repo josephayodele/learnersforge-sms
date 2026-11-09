@@ -422,6 +422,34 @@ try {
     } elseif ($path === '/api/v1/assignments' && $id && $method === 'DELETE') {
         AssignmentController::destroy(authGuard(), $id);
 
+    // ── Communications (email + WhatsApp broadcasts, reminders, parent preview) ──
+    } elseif ($path === '/api/v1/communications/audiences' && $method === 'GET') {
+        CommunicationController::audiences(authGuard());
+
+    } elseif (preg_match('#^/api/v1/communications/events/(\d+)/remind$#', $path, $mcr) && $method === 'POST') {
+        CommunicationController::sendReminder(authGuard(), (int)$mcr[1]);
+
+    } elseif ($path === '/api/v1/communications/parent-preview' && $id && $method === 'GET') {
+        CommunicationController::parentPreview(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/communications/events' && !$id && $method === 'GET') {
+        CommunicationController::events(authGuard());
+
+    } elseif ($path === '/api/v1/communications/events' && !$id && $method === 'POST') {
+        CommunicationController::saveEvent(authGuard());
+
+    } elseif ($path === '/api/v1/communications/events' && $id && $method === 'PUT') {
+        CommunicationController::saveEvent(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/communications/events' && $id && $method === 'DELETE') {
+        CommunicationController::deleteEvent(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/communications' && !$id && $method === 'GET') {
+        CommunicationController::history(authGuard());
+
+    } elseif ($path === '/api/v1/communications' && !$id && $method === 'POST') {
+        CommunicationController::send(authGuard());
+
     // ── Library ───────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/library/books' && $method === 'GET') {
         LibraryController::books(authGuard());
