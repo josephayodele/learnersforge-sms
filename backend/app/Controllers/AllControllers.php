@@ -1731,6 +1731,98 @@ class HostelController {
     }
 }
 
+// ─── TransportController ──────────────────────────────────────────────────────
+// School bus routes (each carries its own driver + per-term fee), the students
+// assigned to a route for a term (pickup point), and transport-fee collection.
+class TransportController {
+    // All routes for the school, with a live count of students assigned.
+    public static function routes(array $user): void {
+        respond(DB::query(
+            'SELECT r.*, (SELECT COUNT(*) FROM student_transport st WHERE st.route_id = r.id) AS enrolled
+             FROM transport_routes r WHERE r.school_id = ? ORDER BY r.name', [(int)$user['school_id']]));
+    }
+
+    // Create ($id null) or update a route. Admin only.
+    public static function saveRoute(array $user, ?int $id = null): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $name = trim((string)($b['name'] ?? ''));
+        if ($name === '') respond(null, 422, 'Route name is required.');
+        $cols = [$name, $b['bus_number'] ?? null, $b['driver_name'] ?? null, $b['driver_phone'] ?? null,
+                 (isset($b['capacity']) && $b['capacity'] !== '') ? (int)$b['capacity'] : null,
+                 (float)($b['term_fee'] ?? 0), (int)($b['is_active'] ?? 1)];
+        if ($id) {
+            DB::run('UPDATE transport_routes SET name=?,bus_number=?,driver_name=?,driver_phone=?,capacity=?,term_fee=?,is_active=? WHERE id=? AND school_id=?',
+                array_merge($cols, [$id, (int)$user['school_id']]));
+            respond(['updated' => true]);
+        }
+        $nid = DB::exec('INSERT INTO transport_routes (school_id,name,bus_number,driver_name,driver_phone,capacity,term_fee,is_active) VALUES (?,?,?,?,?,?,?,?)',
+            array_merge([(int)$user['school_id']], $cols));
+        respond(['id' => $nid], 201, 'Route created');
+    }
+
+    public static function deleteRoute(array $user, int $id): void {
+        Perm::assertAdmin($user);
+        if (!DB::one('SELECT 1 x FROM transport_routes WHERE id=? AND school_id=?', [$id, (int)$user['school_id']]))
+            respond(null, 404, 'Route not found.');
+        DB::run('DELETE FROM student_transport WHERE route_id=?', [$id]);
+        DB::run('DELETE FROM transport_routes WHERE id=? AND school_id=?', [$id, (int)$user['school_id']]);
+        respond(['deleted' => true]);
+    }
+
+    // Student assignments (pickup roster + fee status) for a term. ?term_id= filters.
+    public static function assignments(array $user): void {
+        $term = (int)($_GET['term_id'] ?? 0);
+        $sql = 'SELECT st.id, st.student_id, st.route_id, st.term_id, st.pickup_point, st.fee_paid,
+                       r.name AS route_name, r.term_fee,
+                       u.first_name, u.last_name, s.student_id AS admission_no, c.name AS class_name
+                FROM student_transport st
+                JOIN transport_routes r ON r.id = st.route_id
+                JOIN students s ON s.id = st.student_id
+                JOIN users u ON u.id = s.user_id
+                JOIN classes c ON c.id = s.class_id
+                WHERE r.school_id = ?';
+        $params = [(int)$user['school_id']];
+        if ($term) { $sql .= ' AND st.term_id = ?'; $params[] = $term; }
+        $sql .= ' ORDER BY u.last_name, u.first_name';
+        respond(DB::query($sql, $params));
+    }
+
+    // Assign a student to a route for a term (idempotent — re-assigning moves them).
+    public static function assign(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $studentId = (int)($b['student_id'] ?? 0);
+        $routeId   = (int)($b['route_id'] ?? 0);
+        $term      = (int)($b['term_id'] ?? 0);
+        if (!$studentId || !$routeId || !$term) respond(null, 422, 'Student, route and term are required.');
+        if (!DB::one('SELECT 1 x FROM transport_routes WHERE id=? AND school_id=?', [$routeId, (int)$user['school_id']]))
+            respond(null, 404, 'Route not found.');
+        DB::exec('INSERT INTO student_transport (student_id,route_id,term_id,pickup_point,fee_paid) VALUES (?,?,?,?,0)
+                  ON DUPLICATE KEY UPDATE route_id=VALUES(route_id), pickup_point=VALUES(pickup_point)',
+            [$studentId, $routeId, $term, ($b['pickup_point'] ?? null) ?: null]);
+        respond(['assigned' => true]);
+    }
+
+    public static function unassign(array $user, int $id): void {
+        Perm::assertAdmin($user);
+        DB::run('DELETE st FROM student_transport st JOIN transport_routes r ON r.id=st.route_id WHERE st.id=? AND r.school_id=?',
+            [$id, (int)$user['school_id']]);
+        respond(['removed' => true]);
+    }
+
+    // Record (set) the transport fee paid on an assignment.
+    public static function recordFee(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $id  = (int)($b['id'] ?? 0);
+        $amt = max(0.0, (float)($b['fee_paid'] ?? 0));
+        DB::run('UPDATE student_transport st JOIN transport_routes r ON r.id=st.route_id SET st.fee_paid=? WHERE st.id=? AND r.school_id=?',
+            [$amt, $id, (int)$user['school_id']]);
+        respond(['updated' => true]);
+    }
+}
+
 // ─── LibraryController ────────────────────────────────────────────────────────
 class LibraryController {
     public static function books(array $user): void {

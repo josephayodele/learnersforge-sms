@@ -173,6 +173,16 @@ export const allocateRoom  = data => api.post('/hostel/allocate', data);
 export const getVisitors   = () => api.get('/hostel/visitors');
 export const logVisitor    = data => api.post('/hostel/visitors', data);
 
+// ── Transport ─────────────────────────────────────────────────────────────────
+export const getRoutes              = () => api.get('/transport/routes');
+export const createRoute            = data => api.post('/transport/routes', data);
+export const updateRoute            = (id, data) => api.put(`/transport/routes/${id}`, data);
+export const deleteRoute            = id => api.delete(`/transport/routes/${id}`);
+export const getTransportAssignments = term_id => api.get('/transport/assignments', { params: { term_id } });
+export const assignTransport        = data => api.post('/transport/assign', data);
+export const unassignTransport      = id => api.delete(`/transport/assignments/${id}`);
+export const recordTransportFee     = data => api.post('/transport/fee', data);
+
 // ── Library ───────────────────────────────────────────────────────────────────
 export const getBooks      = () => api.get('/library/books');
 export const getLoans      = () => api.get('/library/loans');

@@ -334,6 +334,31 @@ try {
     } elseif ($path === '/api/v1/hostel/visitors' && $method === 'POST') {
         HostelController::logVisitor(authGuard());
 
+    // ── Transport ───────────────────────────────────────────────────────────────
+    } elseif ($path === '/api/v1/transport/routes' && !$id && $method === 'GET') {
+        TransportController::routes(authGuard());
+
+    } elseif ($path === '/api/v1/transport/routes' && !$id && $method === 'POST') {
+        TransportController::saveRoute(authGuard());
+
+    } elseif ($path === '/api/v1/transport/routes' && $id && $method === 'PUT') {
+        TransportController::saveRoute(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/transport/routes' && $id && $method === 'DELETE') {
+        TransportController::deleteRoute(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/transport/assignments' && !$id && $method === 'GET') {
+        TransportController::assignments(authGuard());
+
+    } elseif ($path === '/api/v1/transport/assignments' && $id && $method === 'DELETE') {
+        TransportController::unassign(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/transport/assign' && $method === 'POST') {
+        TransportController::assign(authGuard());
+
+    } elseif ($path === '/api/v1/transport/fee' && $method === 'POST') {
+        TransportController::recordFee(authGuard());
+
     // ── Library ───────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/library/books' && $method === 'GET') {
         LibraryController::books(authGuard());

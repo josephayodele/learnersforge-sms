@@ -12,7 +12,9 @@ import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadshe
          getAttendance, submitAttendance, getTermAttendance, saveTermAttendance, aiChat,
          getExams, getExam, addExamQuestions, deleteExam, updateExamMeta,
          getExamSubmissions, getSubmission, gradeSubmission,
-         getMyExams, getMyExam, submitMyExam, getMyResults, getMyResultDetail, getPublicSchoolInfo, login as apiLogin } from "./api/client";
+         getMyExams, getMyExam, submitMyExam, getMyResults, getMyResultDetail, getPublicSchoolInfo,
+         getRoutes, createRoute, updateRoute, deleteRoute, getTransportAssignments, assignTransport, unassignTransport, recordTransportFee,
+         login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
 // onto the field names the UI components render (name/avatar/class/fees/gpa).
@@ -5927,120 +5929,297 @@ const AcademicMgmt = () => {
 // 4. TRANSPORT MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════════
 const Transport = () => {
-  const [tab, setTab] = useState("routes");
-  const routes = [
-    {id:"R001",name:"Lekki – VI Route",   driver:"Mr. Adamu Bello",  bus:"LND-342-AA",capacity:35,students:30,fee:25000,status:"Active"},
-    {id:"R002",name:"Surulere – Yaba",    driver:"Mr. Emeka Nwosu",  bus:"LND-218-BB",capacity:30,students:28,fee:22000,status:"Active"},
-    {id:"R003",name:"Ikeja – Ojodu",      driver:"Mr. Kunle Adesanya",bus:"LND-556-CC",capacity:40,students:15,fee:20000,status:"Active"},
-    {id:"R004",name:"Ajah – Sangotedo",   driver:"Mrs. Taiwo Adeyemi",bus:"LND-112-DD",capacity:35,students:35,fee:28000,status:"Full"},
-  ];
-  const drivers = [
-    {id:"D001",name:"Mr. Adamu Bello",   license:"Lagos-DL-2024-001",phone:"08011111111",route:"Lekki – VI",   status:"Active"},
-    {id:"D002",name:"Mr. Emeka Nwosu",   license:"Lagos-DL-2024-002",phone:"08022222222",route:"Surulere – Yaba",status:"Active"},
-    {id:"D003",name:"Mr. Kunle Adesanya",license:"Lagos-DL-2024-003",phone:"08033333333",route:"Ikeja – Ojodu", status:"Active"},
-  ];
+  const [tab, setTab]           = useState("routes");
+  const [terms, setTerms]       = useState([]);
+  const [termId, setTermId]     = useState(null);
+  const [routes, setRoutes]     = useState([]);
+  const [assigns, setAssigns]   = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [routeModal, setRouteModal] = useState(null);   // {} = new, route obj = edit
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [feeRow, setFeeRow]     = useState(null);        // assignment row being paid
+  const [toast, setToast]       = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 2800); };
+  const naira = n => "₦" + Number(n || 0).toLocaleString();
+
+  const loadRoutes  = () => getRoutes().then(r => setRoutes(arrOf(r))).catch(() => setRoutes([]));
+  const loadAssigns = (t) => getTransportAssignments(t).then(r => setAssigns(arrOf(r))).catch(() => setAssigns([]));
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const tr = await getTerms();
+        const ts = arrOf(tr);
+        if (dead) return;
+        setTerms(ts);
+        const cur = ts.find(t => t.is_current) || ts[0];
+        const tid = cur?.id ?? null;
+        setTermId(tid);
+        await Promise.all([loadRoutes(), loadAssigns(tid)]);
+      } finally { if (!dead) setLoading(false); }
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  useEffect(() => { if (termId) loadAssigns(termId); }, [termId]);
+
+  const saveRoute = async (form) => {
+    try {
+      if (form.id) await updateRoute(form.id, form); else await createRoute(form);
+      setRouteModal(null); flash("Route saved."); loadRoutes();
+    } catch (e) { flash(e?.message || e?.data?.message || "Could not save route."); }
+  };
+  const removeRoute = async (r) => {
+    if (!window.confirm(`Delete route "${r.name}"? This also removes its student assignments.`)) return;
+    try { await deleteRoute(r.id); flash("Route deleted."); loadRoutes(); loadAssigns(termId); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not delete route."); }
+  };
+  const removeAssign = async (a) => {
+    if (!window.confirm(`Remove ${a.first_name} ${a.last_name} from ${a.route_name}?`)) return;
+    try { await unassignTransport(a.id); flash("Removed."); loadAssigns(termId); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not remove."); }
+  };
+
+  const enrolledTotal = assigns.length;
+  const withDriver    = routes.filter(r => (r.driver_name || "").trim());
 
   return (
     <div className="fi">
-      <Tabs tabs={[{id:"routes",label:"🚌 Routes"},{id:"drivers",label:"🧑‍✈️ Drivers"},{id:"tracking",label:"📍 Student Pickup"},{id:"fees",label:"💳 Transport Fees"}]} active={tab} onChange={setTab}/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <Tabs tabs={[{id:"routes",label:"🚌 Routes"},{id:"drivers",label:"🧑‍✈️ Drivers"},{id:"tracking",label:"📍 Student Pickup"},{id:"fees",label:"💳 Transport Fees"}]} active={tab} onChange={setTab}/>
+        {(tab==="tracking"||tab==="fees") && terms.length>0 && (
+          <Sel value={termId?String(termId):""} onChange={v=>setTermId(Number(v))}
+               options={terms.map(t=>({value:String(t.id),label:t.name+(t.is_current?" (current)":"")}))} style={{width:190}}/>
+        )}
+      </div>
       <div style={{marginTop:16}}>
+        {loading ? <Card style={{textAlign:"center",color:C.textMuted,padding:"44px"}}>Loading transport…</Card> : <>
 
         {tab==="routes" && (
           <div>
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn variant="primary">+ Add Route</Btn></div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:13}}>
-              {routes.map(r=>(
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn variant="primary" onClick={()=>setRouteModal({})}>+ Add Route</Btn></div>
+            {routes.length===0 ? (
+              <Card style={{textAlign:"center",padding:"48px 16px"}}><div style={{fontSize:34,marginBottom:10}}>🚌</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No routes yet</div><div style={{fontSize:13,color:C.textMid}}>Add your first bus route to get started.</div></Card>
+            ) : (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:13}}>
+              {routes.map(r=>{
+                const full = r.capacity && Number(r.enrolled)>=Number(r.capacity);
+                return(
                 <Card key={r.id}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
                     <div style={{display:"flex",gap:11,alignItems:"center"}}>
                       <div style={{width:44,height:44,borderRadius:11,background:C.sky+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🚌</div>
-                      <div><div style={{fontSize:14,fontWeight:700}}>{r.name}</div><div style={{fontSize:11,color:C.textMuted}}>Bus: {r.bus}</div></div>
+                      <div><div style={{fontSize:14,fontWeight:700}}>{r.name}</div><div style={{fontSize:11,color:C.textMuted}}>Bus: {r.bus_number||"—"}</div></div>
                     </div>
-                    <Badge color={r.status==="Full"?"red":"green"} size="sm">{r.status}</Badge>
+                    <Badge color={!Number(r.is_active)?"gray":full?"red":"green"} size="sm">{!Number(r.is_active)?"Inactive":full?"Full":"Active"}</Badge>
                   </div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:12}}>
-                    {[["Driver",r.driver.split(" ")[1]],["Capacity",r.capacity],["Enrolled",r.students]].map(([l,v])=>(
+                    {[["Driver",(r.driver_name||"—").split(" ").slice(-1)[0]],["Capacity",r.capacity||"—"],["Enrolled",r.enrolled||0]].map(([l,v])=>(
                       <div key={l} style={{textAlign:"center",padding:"8px",borderRadius:8,background:"#F8FAFC"}}>
                         <div style={{fontSize:14,fontWeight:700}}>{v}</div><div style={{fontSize:9,color:C.textMuted}}>{l}</div>
                       </div>
                     ))}
                   </div>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <span style={{fontSize:13,fontWeight:700,color:C.accentDark}}>₦{r.fee.toLocaleString()}<span style={{fontSize:10,color:C.textMuted,fontWeight:400}}>/term</span></span>
-                    <div style={{display:"flex",gap:7}}><Btn size="sm" variant="secondary">View Students</Btn><Btn size="sm" variant="ghost">✏️ Edit</Btn></div>
+                    <span style={{fontSize:13,fontWeight:700,color:C.accentDark}}>{naira(r.term_fee)}<span style={{fontSize:10,color:C.textMuted,fontWeight:400}}>/term</span></span>
+                    <div style={{display:"flex",gap:7}}><Btn size="sm" variant="ghost" onClick={()=>setRouteModal(r)}>✏️ Edit</Btn><Btn size="sm" variant="ghost" onClick={()=>removeRoute(r)}>🗑</Btn></div>
                   </div>
                 </Card>
-              ))}
+              );})}
             </div>
+            )}
           </div>
         )}
 
         {tab==="drivers" && (
           <div>
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn variant="primary">+ Add Driver</Btn></div>
-            <Card style={{padding:0}}>
+            <div style={{fontSize:11,color:C.textMuted,marginBottom:10}}>Drivers are managed per route. Add or edit a driver on its route.</div>
+            {withDriver.length===0 ? (
+              <Card style={{textAlign:"center",padding:"40px 16px",color:C.textMid}}>No drivers assigned to any route yet.</Card>
+            ) : (
+            <Card style={{padding:0,overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
-                <thead><tr style={{background:"#F8FAFC"}}>{["Driver","License No.","Phone","Assigned Route","Status","Action"].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#F8FAFC"}}>{["Driver","Phone","Assigned Route","Bus No.","Status","Action"].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {drivers.map(d=>(
-                    <tr key={d.id} style={{borderBottom:`1px solid ${C.border}`}} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{padding:"10px 13px"}}><div style={{display:"flex",alignItems:"center",gap:9}}><Avatar initials={d.name.split(" ").map(w=>w[0]).slice(0,2).join("")} size={28} color={C.sky}/><span style={{fontSize:13,fontWeight:600}}>{d.name}</span></div></td>
-                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace"}}>{d.license}</td>
-                      <td style={{padding:"10px 13px",fontSize:12}}>{d.phone}</td>
-                      <td style={{padding:"10px 13px",fontSize:12}}>{d.route}</td>
-                      <td style={{padding:"10px 13px"}}><Badge color="green" size="sm">{d.status}</Badge></td>
-                      <td style={{padding:"10px 13px"}}><Btn size="sm" variant="secondary">View</Btn></td>
+                  {withDriver.map(r=>(
+                    <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"10px 13px"}}><div style={{display:"flex",alignItems:"center",gap:9}}><Avatar initials={(r.driver_name||"").split(" ").map(w=>w[0]).slice(0,2).join("")} size={28} color={C.sky}/><span style={{fontSize:13,fontWeight:600}}>{r.driver_name}</span></div></td>
+                      <td style={{padding:"10px 13px",fontSize:12}}>{r.driver_phone||"—"}</td>
+                      <td style={{padding:"10px 13px",fontSize:12}}>{r.name}</td>
+                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace"}}>{r.bus_number||"—"}</td>
+                      <td style={{padding:"10px 13px"}}><Badge color={Number(r.is_active)?"green":"gray"} size="sm">{Number(r.is_active)?"Active":"Inactive"}</Badge></td>
+                      <td style={{padding:"10px 13px"}}><Btn size="sm" variant="secondary" onClick={()=>setRouteModal(r)}>Edit</Btn></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </Card>
+            )}
           </div>
         )}
 
         {tab==="tracking" && (
           <div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:16}}>
-              <StatCard label="Total Routes"   value={routes.length}                          color={C.sky}    icon="🗺️"/>
-              <StatCard label="Students on Bus" value={routes.reduce((a,r)=>a+r.students,0)} color={C.accent} icon="👨‍🎓"/>
-              <StatCard label="Active Drivers"  value={drivers.length}                         color={C.purple} icon="🧑‍✈️"/>
+              <StatCard label="Total Routes"    value={routes.length}        color={C.sky}    icon="🗺️"/>
+              <StatCard label="Students on Bus"  value={enrolledTotal}        color={C.accent} icon="👨‍🎓"/>
+              <StatCard label="Drivers"          value={withDriver.length}    color={C.purple} icon="🧑‍✈️"/>
             </div>
-            <Card>
-              <div style={{fontSize:13,fontWeight:700,marginBottom:14}}>📍 Today's Pickup Status</div>
-              {STUDENTS.map((s,i)=>(
-                <div key={s.id} style={{display:"flex",alignItems:"center",gap:12,padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
-                  <Avatar initials={s.avatar} size={30} color={C.accent}/>
-                  <div style={{flex:1}}><div style={{fontSize:12,fontWeight:600}}>{s.name}</div><div style={{fontSize:10,color:C.textMuted}}>{routes[i%routes.length].name}</div></div>
-                  <Badge color={i%3===0?"green":i%3===1?"amber":"gray"} size="sm">{i%3===0?"Picked Up":i%3===1?"En Route":"Not Registered"}</Badge>
-                </div>
-              ))}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div style={{fontSize:13,fontWeight:700}}>📍 Assigned Students</div>
+              <Btn variant="primary" size="sm" onClick={()=>setAssignOpen(true)} disabled={routes.length===0}>+ Assign Student</Btn>
+            </div>
+            {assigns.length===0 ? (
+              <Card style={{textAlign:"center",padding:"40px 16px",color:C.textMid}}>No students assigned to a route this term. {routes.length===0?"Add a route first.":""}</Card>
+            ) : (
+            <Card style={{padding:0,overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead><tr style={{background:"#F8FAFC"}}>{["Student","Class","Route","Pickup Point","Action"].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {assigns.map(a=>(
+                    <tr key={a.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{a.first_name} {a.last_name}<div style={{fontSize:10,color:C.textMuted,fontFamily:"monospace"}}>{a.admission_no}</div></td>
+                      <td style={{padding:"10px 13px",fontSize:12}}>{a.class_name}</td>
+                      <td style={{padding:"10px 13px",fontSize:12}}>{a.route_name}</td>
+                      <td style={{padding:"10px 13px",fontSize:12}}>{a.pickup_point||"—"}</td>
+                      <td style={{padding:"10px 13px"}}><Btn size="sm" variant="ghost" onClick={()=>removeAssign(a)}>🗑 Remove</Btn></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </Card>
+            )}
           </div>
         )}
 
         {tab==="fees" && (
           <div>
-            <Card style={{padding:0}}>
+            {assigns.length===0 ? (
+              <Card style={{textAlign:"center",padding:"40px 16px",color:C.textMid}}>No transport assignments this term.</Card>
+            ) : (
+            <Card style={{padding:0,overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
-                <thead><tr style={{background:"#F8FAFC"}}>{["Student","Route","Term Fee","Paid","Balance","Status"].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
+                <thead><tr style={{background:"#F8FAFC"}}>{["Student","Route","Term Fee","Paid","Balance","Status","Action"].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {STUDENTS.map((s,i)=>{const fee=routes[i%routes.length].fee;const paid=i%2===0?fee:Math.round(fee*.5);return(
-                    <tr key={s.id} style={{borderBottom:`1px solid ${C.border}`}} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{s.name}</td>
-                      <td style={{padding:"10px 13px",fontSize:12}}>{routes[i%routes.length].name}</td>
-                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace"}}>₦{fee.toLocaleString()}</td>
-                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace",color:C.accentDark}}>₦{paid.toLocaleString()}</td>
-                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace",color:(fee-paid)>0?C.coral:C.textMuted}}>₦{(fee-paid).toLocaleString()}</td>
-                      <td style={{padding:"10px 13px"}}><Badge color={paid===fee?"green":"amber"} size="sm">{paid===fee?"Paid":"Part"}</Badge></td>
+                  {assigns.map(a=>{const fee=Number(a.term_fee||0),paid=Number(a.fee_paid||0),bal=fee-paid;return(
+                    <tr key={a.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{a.first_name} {a.last_name}</td>
+                      <td style={{padding:"10px 13px",fontSize:12}}>{a.route_name}</td>
+                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace"}}>{naira(fee)}</td>
+                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace",color:C.accentDark}}>{naira(paid)}</td>
+                      <td style={{padding:"10px 13px",fontSize:12,fontFamily:"monospace",color:bal>0?C.coral:C.textMuted}}>{naira(bal)}</td>
+                      <td style={{padding:"10px 13px"}}><Badge color={paid>=fee&&fee>0?"green":paid>0?"amber":"gray"} size="sm">{paid>=fee&&fee>0?"Paid":paid>0?"Part":"Unpaid"}</Badge></td>
+                      <td style={{padding:"10px 13px"}}><Btn size="sm" variant="secondary" onClick={()=>setFeeRow(a)}>Record</Btn></td>
                     </tr>
                   );})}
                 </tbody>
               </table>
             </Card>
+            )}
           </div>
         )}
+        </>}
       </div>
+
+      {routeModal && <RouteModal route={routeModal} onClose={()=>setRouteModal(null)} onSave={saveRoute}/>}
+      {assignOpen && <AssignTransportModal routes={routes} termId={termId} onClose={()=>setAssignOpen(false)} onDone={()=>{setAssignOpen(false); loadAssigns(termId); loadRoutes();}} flash={flash}/>}
+      {feeRow && <RecordFeeModal row={feeRow} onClose={()=>setFeeRow(null)} onDone={()=>{setFeeRow(null); loadAssigns(termId);}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600}}>{toast}</div>}
     </div>
+  );
+};
+
+// Add / edit a bus route (also where a route's driver is set).
+const RouteModal = ({ route, onClose, onSave }) => {
+  const isEdit = !!route.id;
+  const [f, setF] = useState({
+    id: route.id, name: route.name||"", bus_number: route.bus_number||"",
+    driver_name: route.driver_name||"", driver_phone: route.driver_phone||"",
+    capacity: route.capacity!=null?String(route.capacity):"", term_fee: route.term_fee!=null?String(route.term_fee):"",
+    is_active: route.is_active!=null?Number(route.is_active):1,
+  });
+  const [saving, setSaving] = useState(false);
+  const set = k => v => setF(p => ({ ...p, [k]: v }));
+  const submit = async () => {
+    if (!f.name.trim()) return;
+    setSaving(true);
+    await onSave({ ...f, capacity: f.capacity===""?null:Number(f.capacity), term_fee: Number(f.term_fee||0), is_active: Number(f.is_active) });
+    setSaving(false);
+  };
+  return (
+    <Modal title={isEdit?"Edit Route":"Add Route"} onClose={saving?()=>{}:onClose} width={560}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <Input label="Route Name" value={f.name} onChange={set("name")} placeholder="e.g. Lekki – Victoria Island" style={{gridColumn:"1 / -1"}}/>
+        <Input label="Bus Number" value={f.bus_number} onChange={set("bus_number")} placeholder="e.g. LND-342-AA"/>
+        <Input label="Capacity" value={f.capacity} onChange={set("capacity")} type="number" placeholder="e.g. 35"/>
+        <Input label="Driver Name" value={f.driver_name} onChange={set("driver_name")} placeholder="Driver's full name"/>
+        <Input label="Driver Phone" value={f.driver_phone} onChange={set("driver_phone")} placeholder="+234 …"/>
+        <Input label="Term Fee (₦)" value={f.term_fee} onChange={set("term_fee")} type="number" placeholder="e.g. 25000"/>
+        <Sel label="Status" value={String(f.is_active)} onChange={v=>set("is_active")(Number(v))} options={[{value:"1",label:"Active"},{value:"0",label:"Inactive"}]}/>
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving||!f.name.trim()}>{saving?"Saving…":(isEdit?"Save Changes":"Create Route")}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// Assign a student (picked by class) to a route for the current term.
+const AssignTransportModal = ({ routes, termId, onClose, onDone, flash }) => {
+  const [classes, setClasses] = useState([]);
+  const [classId, setClassId] = useState("");
+  const [students, setStudents] = useState([]);
+  const [f, setF] = useState({ student_id:"", route_id:"", pickup_point:"" });
+  const [saving, setSaving] = useState(false);
+  const set = k => v => setF(p => ({ ...p, [k]: v }));
+  useEffect(() => { getClasses().then(r => setClasses(arrOf(r))).catch(()=>setClasses([])); }, []);
+  useEffect(() => {
+    if (!classId) { setStudents([]); return; }
+    getStudents({ class_id: classId, per_page: 200 }).then(r => setStudents(arrOf(r,"students"))).catch(()=>setStudents([]));
+  }, [classId]);
+  const submit = async () => {
+    if (!f.student_id || !f.route_id) { flash("Pick a student and a route."); return; }
+    setSaving(true);
+    try { await assignTransport({ student_id:Number(f.student_id), route_id:Number(f.route_id), term_id:termId, pickup_point:f.pickup_point||null }); flash("Student assigned."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not assign."); setSaving(false); }
+  };
+  return (
+    <Modal title="Assign Student to Route" onClose={saving?()=>{}:onClose} width={520}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <Sel label="Class" value={classId} onChange={v=>{setClassId(v); set("student_id")("");}} options={[{value:"",label:"Select class…"},...classes.map(c=>({value:String(c.id),label:c.name}))]}/>
+        <Sel label="Student" value={f.student_id} onChange={set("student_id")} options={[{value:"",label:classId?"Select student…":"Pick a class first"},...students.map(s=>({value:String(s.id),label:`${s.first_name} ${s.last_name}`}))]}/>
+        <Sel label="Route" value={f.route_id} onChange={set("route_id")} options={[{value:"",label:"Select route…"},...routes.map(r=>({value:String(r.id),label:r.name}))]}/>
+        <Input label="Pickup Point" value={f.pickup_point} onChange={set("pickup_point")} placeholder="e.g. Admiralty Way"/>
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Assigning…":"Assign"}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// Record the transport fee paid for one assignment.
+const RecordFeeModal = ({ row, onClose, onDone, flash }) => {
+  const [amt, setAmt] = useState(String(row.fee_paid||0));
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    setSaving(true);
+    try { await recordTransportFee({ id: row.id, fee_paid: Number(amt||0) }); flash("Payment recorded."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not record payment."); setSaving(false); }
+  };
+  return (
+    <Modal title="Record Transport Fee" onClose={saving?()=>{}:onClose} width={420}>
+      <div style={{fontSize:13,color:C.textMid,marginBottom:12}}>{row.first_name} {row.last_name} · {row.route_name} · Term fee <strong>₦{Number(row.term_fee||0).toLocaleString()}</strong></div>
+      <Input label="Total Amount Paid (₦)" value={amt} onChange={setAmt} type="number" placeholder="0"/>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Saving…":"Save"}</Btn>
+      </div>
+    </Modal>
   );
 };
 
