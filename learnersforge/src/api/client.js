@@ -199,6 +199,16 @@ export const getAttAnalytics     = term_id => api.get('/analytics/attendance', {
 export const getFinanceAnalytics = term_id => api.get('/analytics/finance', { params: { term_id } });
 export const getAdmissionAnalytics = () => api.get('/analytics/admissions');
 
+// ── Online assignments ─────────────────────────────────────────────────────────
+export const getAssignments       = class_id => api.get('/assignments', { params: { class_id } });
+export const createAssignment     = data => api.post('/assignments', data);
+export const updateAssignment     = (id, data) => api.put(`/assignments/${id}`, data);
+export const deleteAssignment     = id => api.delete(`/assignments/${id}`);
+export const getAssignmentSubmissions = id => api.get(`/assignments/${id}/submissions`);
+export const gradeAssignment      = (subId, data) => api.post(`/assignment-submissions/${subId}/grade`, data);
+export const getMyOnlineAssignments = () => api.get('/my/assignments');
+export const submitMyAssignment     = data => api.post('/my/assignment-submit', data);
+
 // ── Library ───────────────────────────────────────────────────────────────────
 export const getBooks      = () => api.get('/library/books');
 export const getLoans      = () => api.get('/library/loans');

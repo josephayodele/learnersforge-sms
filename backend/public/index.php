@@ -302,6 +302,12 @@ try {
     } elseif ($path === '/api/v1/my/exam-submit' && $method === 'POST') {
         StudentPortalController::submitExam(authGuard());
 
+    } elseif ($path === '/api/v1/my/assignments' && $method === 'GET') {
+        StudentPortalController::myAssignments(authGuard());
+
+    } elseif ($path === '/api/v1/my/assignment-submit' && $method === 'POST') {
+        StudentPortalController::submitAssignment(authGuard());
+
     // ── Inventory ─────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/inventory' && $method === 'GET') {
         InventoryController::index(authGuard());
@@ -396,6 +402,25 @@ try {
 
     } elseif ($path === '/api/v1/analytics/admissions' && $method === 'GET') {
         AnalyticsController::admissions(authGuard());
+
+    // ── Online assignments (teacher/admin) ──────────────────────────────────────
+    } elseif (preg_match('#^/api/v1/assignments/(\d+)/submissions$#', $path, $masub) && $method === 'GET') {
+        AssignmentController::submissions(authGuard(), (int)$masub[1]);
+
+    } elseif (preg_match('#^/api/v1/assignment-submissions/(\d+)/grade$#', $path, $mag) && $method === 'POST') {
+        AssignmentController::grade(authGuard(), (int)$mag[1]);
+
+    } elseif ($path === '/api/v1/assignments' && !$id && $method === 'GET') {
+        AssignmentController::index(authGuard());
+
+    } elseif ($path === '/api/v1/assignments' && !$id && $method === 'POST') {
+        AssignmentController::store(authGuard());
+
+    } elseif ($path === '/api/v1/assignments' && $id && $method === 'PUT') {
+        AssignmentController::update(authGuard(), $id);
+
+    } elseif ($path === '/api/v1/assignments' && $id && $method === 'DELETE') {
+        AssignmentController::destroy(authGuard(), $id);
 
     // ── Library ───────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/library/books' && $method === 'GET') {

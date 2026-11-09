@@ -16,6 +16,7 @@ import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadshe
          getRoutes, createRoute, updateRoute, deleteRoute, getTransportAssignments, assignTransport, unassignTransport, recordTransportFee,
          getStaffAttendance, saveStaffAttendance as apiSaveStaffAttendance, getLeave, requestLeave, decideLeave, getHrPayroll, savePayroll, markPayrollPaid,
          getPerfAnalytics, getAttAnalytics, getFinanceAnalytics, getAdmissionAnalytics,
+         getAssignments, createAssignment, updateAssignment, deleteAssignment, getAssignmentSubmissions, gradeAssignment, getMyOnlineAssignments, submitMyAssignment,
          login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
@@ -230,7 +231,7 @@ const NAV=[
   {id:"cms",          label:"Website & CMS",      icon:"🌐",group:"ops"},
   {id:"hr",           label:"HR Module",          icon:"👥",group:"ops"},
   {id:"cctv",         label:"CCTV Security",      icon:"📹",group:"ops"},
-  {id:"online-learning",label:"Online Learning",  icon:"🎓",group:"learning"},
+  {id:"online-learning",label:"Online Assignments",  icon:"📝",group:"learning"},
   {id:"communications",label:"Communications",    icon:"📱",group:"learning"},
   {id:"analytics",    label:"Analytics",          icon:"📈",group:"learning"},
 ];
@@ -297,7 +298,7 @@ const Sidebar = ({active,onNav,collapsed,setCollapsed,school,isMobile,mobileOpen
 };
 
 // ── Topbar ────────────────────────────────────────────────────────────────────
-const TITLES={dashboard:"Dashboard",students:"Student Management",staff:"Staff Management",attendance:"Attendance",grades:"Grades & Report Cards",timetable:"Timetable",cbt:"CBT Exams","cbt-create":"Create Exam","cbt-take":"Take Exam","ai-tools":"AI Teaching Tools",fees:"Fees & Finance",messaging:"Messaging",hostel:"Hostel Management",inventory:"Inventory",library:"Library Management",settings:"Settings","admissions":"Admissions & Enrollment","academic-mgmt":"Academic Management","student-extras":"Student Records","transport":"Transport Management","certificates":"Certificates & ID Cards","multi-branch":"Multi-Branch Management","cms":"Website & CMS","hr":"HR Module","online-learning":"Online Learning","communications":"Communications","analytics":"Reports & Analytics"};
+const TITLES={dashboard:"Dashboard",students:"Student Management",staff:"Staff Management",attendance:"Attendance",grades:"Grades & Report Cards",timetable:"Timetable",cbt:"CBT Exams","cbt-create":"Create Exam","cbt-take":"Take Exam","ai-tools":"AI Teaching Tools",fees:"Fees & Finance",messaging:"Messaging",hostel:"Hostel Management",inventory:"Inventory",library:"Library Management",settings:"Settings","admissions":"Admissions & Enrollment","academic-mgmt":"Academic Management","student-extras":"Student Records","transport":"Transport Management","certificates":"Certificates & ID Cards","multi-branch":"Multi-Branch Management","cms":"Website & CMS","hr":"HR Module","online-learning":"Online Assignments","communications":"Communications","analytics":"Reports & Analytics"};
 // Friendly labels for the role stored on the user record.
 const ROLE_LABELS={super_admin:"Super Admin",school_admin:"Administrator",teacher:"Teacher",student:"Student",parent:"Parent",accountant:"Accountant"};
 const Topbar = ({page,onNav,onLogout,school,user,isMobile,onMenu}) => {
@@ -7045,119 +7046,170 @@ const PayslipModal = ({ row, staff, month, year, onClose, onDone, flash }) => {
 // 9. ONLINE LEARNING — Virtual Classes, Recorded Lectures, Online Assignments
 // ═══════════════════════════════════════════════════════════════════════════════
 const OnlineLearning = () => {
-  const [tab, setTab] = useState("live");
-  const [schedModal, setSchedModal] = useState(false);
+  const [classes, setClasses] = useState([]);
+  const [classId, setClassId] = useState("");
+  const [subjects, setSubjects] = useState([]);
+  const [termId, setTermId]   = useState(null);
+  const [list, setList]       = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [modal, setModal]     = useState(null);   // {} = new, obj = edit
+  const [subView, setSubView] = useState(null);    // { assignment, submissions }
+  const [toast, setToast]     = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 2600); };
 
-  const liveClasses = [
-    {id:"LC001",title:"Quadratic Equations – Live Session", subject:"Mathematics",teacher:"Mrs. Adeyemi",class:"SSS 2",date:"2026-05-27",time:"10:00 AM",duration:"1 hour",status:"Scheduled",platform:"Google Meet"},
-    {id:"LC002",title:"English Essay Writing Workshop",     subject:"English",    teacher:"Mr. Osei",   class:"JSS 3",date:"2026-05-27",time:"2:00 PM", duration:"45 min",status:"Live Now",  platform:"Zoom"},
-    {id:"LC003",title:"Cell Division & Mitosis",           subject:"Biology",    teacher:"Ms. Ike",    class:"SSS 1",date:"2026-05-28",time:"9:00 AM", duration:"1 hour",status:"Scheduled",platform:"Google Meet"},
-  ];
-  const recordings = [
-    {id:"R001",title:"Introduction to Trigonometry",     subject:"Mathematics",teacher:"Mrs. Adeyemi",class:"SSS 2",duration:"58 min",views:142,date:"2026-05-20"},
-    {id:"R002",title:"Nigeria's Independence Movement",  subject:"History",    teacher:"Mr. Abdullahi",class:"SSS 3",duration:"45 min",views:98, date:"2026-05-18"},
-    {id:"R003",title:"Newton's Laws of Motion",          subject:"Physics",    teacher:"Mrs. Adeyemi",class:"SSS 2",duration:"52 min",views:210,date:"2026-05-15"},
-  ];
+  useEffect(() => {
+    getClasses().then(r => { const cs = arrOf(r); setClasses(cs); setClassId(p => p || (cs[0] ? String(cs[0].id) : "")); }).catch(()=>{});
+    getSubjects().then(r => setSubjects(arrOf(r))).catch(()=>{});
+    getTerms().then(r => { const ts = arrOf(r); const cur = ts.find(t=>t.is_current)||ts[0]; setTermId(cur?.id ?? null); }).catch(()=>{});
+  }, []);
+
+  const load = (cid) => { if (!cid) { setList([]); return; } setLoading(true); getAssignments(cid).then(r => setList(arrOf(r))).catch(()=>setList([])).finally(()=>setLoading(false)); };
+  useEffect(() => { if (classId) load(classId); }, [classId]);
+
+  const remove = async (a) => {
+    if (!window.confirm(`Delete "${a.title}"? Student submissions will be removed.`)) return;
+    try { await deleteAssignment(a.id); flash("Assignment deleted."); load(classId); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not delete."); }
+  };
+  const openSubs = async (a) => {
+    try { const r = await getAssignmentSubmissions(a.id); setSubView(r?.data ?? r); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not load submissions."); }
+  };
+  const dueBadge = (d) => {
+    if (!d) return null;
+    const over = new Date(d) < new Date(new Date().toDateString());
+    return <Badge color={over?"red":"blue"} size="sm">Due {d}{over?" (past)":""}</Badge>;
+  };
+
+  if (subView) return (
+    <SubmissionsView view={subView} onBack={()=>{setSubView(null); load(classId);}} flash={flash}/>
+  );
 
   return (
     <div className="fi">
-      <div style={{display:"flex",gap:12,alignItems:"center",padding:"12px 18px",background:`linear-gradient(135deg,${C.purple} 0%,${C.sky} 100%)`,borderRadius:12,marginBottom:18}}>
-        <div style={{width:40,height:40,borderRadius:10,background:"rgba(255,255,255,.2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>🎓</div>
-        <div><div style={{color:"#fff",fontSize:14,fontWeight:700}}>Online Learning Centre</div><div style={{color:"rgba(255,255,255,.75)",fontSize:11,marginTop:2}}>Virtual classes, recorded lectures and online assignments</div></div>
-        <div style={{marginLeft:"auto"}}><Btn variant="secondary" size="sm" onClick={()=>setSchedModal(true)}>+ Schedule Class</Btn></div>
-      </div>
-
-      <Tabs tabs={[{id:"live",label:"🔴 Live Classes"},{id:"recordings",label:"🎥 Recordings"},{id:"online-assignments",label:"📝 Online Assignments"}]} active={tab} onChange={setTab}/>
-      <div style={{marginTop:16}}>
-
-        {tab==="live" && (
-          <div style={{display:"flex",flexDirection:"column",gap:12}}>
-            {liveClasses.map(lc=>(
-              <Card key={lc.id}>
-                <div style={{display:"flex",gap:14,alignItems:"center"}}>
-                  <div style={{width:54,height:54,borderRadius:12,background:lc.status==="Live Now"?C.coral+"22":C.accentLight,border:`2px solid ${lc.status==="Live Now"?C.coral:C.accent}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>{lc.status==="Live Now"?"🔴":"📹"}</div>
-                  <div style={{flex:1}}>
-                    <div style={{display:"flex",gap:9,alignItems:"center",marginBottom:4}}>
-                      <span style={{fontSize:14,fontWeight:700}}>{lc.title}</span>
-                      {lc.status==="Live Now"&&<Badge color="red">🔴 LIVE</Badge>}
-                      {lc.status==="Scheduled"&&<Badge color="blue" size="sm">Scheduled</Badge>}
-                    </div>
-                    <div style={{fontSize:12,color:C.textMuted}}>{lc.subject} · {lc.class} · {lc.teacher} · {lc.date} at {lc.time} · {lc.duration}</div>
-                    <div style={{fontSize:11,color:C.textMid,marginTop:2}}>Platform: {lc.platform}</div>
-                  </div>
-                  <div style={{display:"flex",gap:8}}>
-                    {lc.status==="Live Now"&&<Btn variant="danger">Join Now →</Btn>}
-                    {lc.status==="Scheduled"&&<><Btn size="sm" variant="secondary">Edit</Btn><Btn size="sm" variant="primary">📧 Notify Students</Btn></>}
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
-        )}
-
-        {tab==="recordings" && (
-          <div>
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn variant="primary">📎 Upload Recording</Btn></div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
-              {recordings.map(r=>(
-                <Card key={r.id} style={{cursor:"pointer"}} onClick={()=>{}}>
-                  <div style={{width:"100%",height:90,borderRadius:9,background:`linear-gradient(135deg,${C.navy} 0%,${C.navyMid} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,marginBottom:11,position:"relative"}}>
-                    ▶️
-                    <div style={{position:"absolute",bottom:7,right:8,background:"rgba(0,0,0,.6)",color:"#fff",fontSize:10,borderRadius:4,padding:"2px 6px"}}>{r.duration}</div>
-                  </div>
-                  <div style={{fontSize:13,fontWeight:700,lineHeight:1.3}}>{r.title}</div>
-                  <div style={{fontSize:11,color:C.textMuted,marginTop:4}}>{r.subject} · {r.class}</div>
-                  <div style={{display:"flex",justifyContent:"space-between",marginTop:9,fontSize:11,color:C.textMid}}>
-                    <span>👁 {r.views} views</span><span>{r.date}</span>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {tab==="online-assignments" && (
-          <div>
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}><Btn variant="primary">+ Create Online Assignment</Btn></div>
-            <div style={{display:"flex",flexDirection:"column",gap:11}}>
-              {[["Algebra Problem Set","Mathematics","SSS 2B","2026-05-30",22,28,"Open"],["Comprehension Exercise","English","JSS 3A","2026-05-28",28,30,"Open"],["Lab Report – Titration","Chemistry","SSS 1A","2026-05-26",15,24,"Closed"]].map(([title,subj,cls,due,sub,total,status])=>{
-                const pct=Math.round(sub/total*100);
-                return(
-                  <Card key={title}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:11}}>
-                      <div>
-                        <div style={{fontSize:13,fontWeight:700}}>{title}</div>
-                        <div style={{fontSize:11,color:C.textMuted,marginTop:3}}>{subj} · {cls} · Due: <strong style={{color:status==="Open"?C.amber:C.textMuted}}>{due}</strong></div>
-                      </div>
-                      <Badge color={status==="Open"?"green":"gray"}>{status}</Badge>
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:12}}>
-                      <div style={{flex:1,height:5,borderRadius:99,background:C.border}}><div style={{height:5,borderRadius:99,background:pct>=80?C.accent:pct>=50?C.amber:C.coral,width:pct+"%"}}/></div>
-                      <span style={{fontSize:12,fontWeight:700,minWidth:65,textAlign:"right"}}>{sub}/{total} submitted</span>
-                      <Btn size="sm" variant="secondary">Review</Btn>
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {schedModal&&<Modal title="📅 Schedule Virtual Class" onClose={()=>setSchedModal(false)} width={500}>
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <Input label="Session Title" value="" onChange={()=>{}} placeholder="e.g. Quadratic Equations – Live Session"/>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-            <Sel label="Subject" value="Mathematics" onChange={()=>{}} options={SUBJECTS.map(s=>({value:s,label:s}))}/>
-            <Sel label="Class"   value="SSS 2A"      onChange={()=>{}} options={CLASSES.map(c=>({value:c,label:c}))}/>
-            <Input label="Date"  value=""             onChange={()=>{}} type="date"/>
-            <Input label="Time"  value=""             onChange={()=>{}} type="time"/>
-            <Sel label="Duration" value="60" onChange={()=>{}} options={["30","45","60","90","120"].map(d=>({value:d,label:d+" minutes"}))}/>
-            <Sel label="Platform" value="google-meet" onChange={()=>{}} options={[{value:"google-meet",label:"Google Meet"},{value:"zoom",label:"Zoom"},{value:"teams",label:"Microsoft Teams"}]}/>
-          </div>
-          <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setSchedModal(false)}>Cancel</Btn><Btn variant="primary" onClick={()=>setSchedModal(false)}>📅 Schedule Class</Btn></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:16}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:13,fontWeight:700}}>📝 Online Assignments</span>
+          <Sel value={classId} onChange={setClassId} options={[{value:"",label:"Select class…"},...classes.map(c=>({value:String(c.id),label:c.name}))]} style={{width:180}}/>
         </div>
-      </Modal>}
+        <Btn variant="primary" onClick={()=>setModal({})} disabled={!classId}>+ New Assignment</Btn>
+      </div>
+      {loading ? <Card style={{textAlign:"center",color:C.textMuted,padding:"40px"}}>Loading…</Card>
+      : list.length===0 ? (
+        <Card style={{textAlign:"center",padding:"48px 16px"}}><div style={{fontSize:34,marginBottom:10}}>📝</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No assignments yet</div><div style={{fontSize:13,color:C.textMid}}>{classId?"Post the first assignment for this class.":"Pick a class to begin."}</div></Card>
+      ) : (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:13}}>
+          {list.map(a=>(
+            <Card key={a.id}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:8}}>
+                <div style={{fontSize:14,fontWeight:700}}>{a.title}</div>
+                <span style={{fontSize:12,fontWeight:700,color:C.accentDark,whiteSpace:"nowrap"}}>{a.max_marks} mk</span>
+              </div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:9}}>
+                {a.subject_name && <Badge color="purple" size="sm">{a.subject_name}</Badge>}
+                {dueBadge(a.due_date)}
+              </div>
+              {a.instructions && <div style={{fontSize:12,color:C.textMid,marginBottom:10,maxHeight:48,overflow:"hidden"}}>{a.instructions}</div>}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:6}}>
+                <div style={{fontSize:11,color:C.textMuted}}>📥 {a.submitted||0}/{a.class_size||0} submitted · {a.graded||0} graded</div>
+              </div>
+              <div style={{display:"flex",gap:7,justifyContent:"flex-end",marginTop:10}}>
+                <Btn size="sm" variant="secondary" onClick={()=>openSubs(a)}>Submissions</Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>setModal(a)}>✏️</Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>remove(a)}>🗑</Btn>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      {modal && <AssignmentModal assignment={modal} classId={classId} termId={termId} subjects={subjects}
+                   onClose={()=>setModal(null)} onDone={()=>{setModal(null); load(classId);}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600}}>{toast}</div>}
+    </div>
+  );
+};
+
+const AssignmentModal = ({ assignment, classId, termId, subjects, onClose, onDone, flash }) => {
+  const isEdit = !!assignment.id;
+  const [f, setF] = useState({
+    title: assignment.title||"", subject_id: assignment.subject_id?String(assignment.subject_id):"",
+    instructions: assignment.instructions||"", resource_url: assignment.resource_url||"",
+    due_date: (assignment.due_date||"").slice(0,10), max_marks: assignment.max_marks!=null?String(assignment.max_marks):"100",
+  });
+  const [saving, setSaving] = useState(false);
+  const set = k => v => setF(p => ({ ...p, [k]: v }));
+  const submit = async () => {
+    if (!f.title.trim()) { flash("Title is required."); return; }
+    setSaving(true);
+    const payload = { ...f, class_id:Number(classId), term_id:termId, subject_id:f.subject_id?Number(f.subject_id):null, max_marks:Number(f.max_marks||100) };
+    try { if (isEdit) await updateAssignment(assignment.id, payload); else await createAssignment(payload); flash("Assignment saved."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not save."); setSaving(false); }
+  };
+  return (
+    <Modal title={isEdit?"Edit Assignment":"New Assignment"} onClose={saving?()=>{}:onClose} width={560}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <Input label="Title" value={f.title} onChange={set("title")} placeholder="e.g. Essay: My Hero" style={{gridColumn:"1 / -1"}}/>
+        <Sel label="Subject (optional)" value={f.subject_id} onChange={set("subject_id")} options={[{value:"",label:"None"},...subjects.map(s=>({value:String(s.id),label:s.name}))]}/>
+        <Input label="Due Date" value={f.due_date} onChange={set("due_date")} type="date"/>
+        <Input label="Max Marks" value={f.max_marks} onChange={set("max_marks")} type="number"/>
+        <Input label="Resource Link (optional)" value={f.resource_url} onChange={set("resource_url")} placeholder="https://…"/>
+        <Input label="Instructions" value={f.instructions} onChange={set("instructions")} placeholder="What students should do…" style={{gridColumn:"1 / -1"}}/>
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving||!f.title.trim()}>{saving?"Saving…":(isEdit?"Save":"Post Assignment")}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+const SubmissionsView = ({ view, onBack, flash }) => {
+  const a = view.assignment || {};
+  const [rows, setRows] = useState(view.submissions || []);
+  const [marks, setMarks] = useState(() => { const m={}; (view.submissions||[]).forEach(s=>{ if(s.submission_id) m[s.submission_id]={marks:s.marks??"",feedback:s.feedback||""}; }); return m; });
+  const [savingId, setSavingId] = useState(null);
+  const saveGrade = async (s) => {
+    const g = marks[s.submission_id] || {};
+    setSavingId(s.submission_id);
+    try { await gradeAssignment(s.submission_id, { marks:g.marks===""?null:Number(g.marks), feedback:g.feedback||"" });
+      setRows(rs=>rs.map(r=>r.submission_id===s.submission_id?{...r,marks:g.marks===""?null:Number(g.marks),feedback:g.feedback}:r)); flash("Grade saved."); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not save grade."); }
+    finally { setSavingId(null); }
+  };
+  const submitted = rows.filter(r=>r.submission_id);
+  return (
+    <div className="fi">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+        <Btn variant="secondary" size="sm" onClick={onBack}>← Back to assignments</Btn>
+        <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:700}}>{a.title}</div><div style={{fontSize:12,color:C.textMid}}>{submitted.length}/{rows.length} submitted · max {a.max_marks} marks</div></div>
+      </div>
+      <Card style={{padding:0,overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr style={{background:"#F8FAFC"}}>{["Student","Submitted","Answer / Link","Marks","Feedback",""].map(h=><th key={h} style={{padding:"10px 13px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase"}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map(s=>(
+              <tr key={s.student_id} style={{borderBottom:`1px solid ${C.border}`}}>
+                <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{s.first_name} {s.last_name}<div style={{fontSize:10,color:C.textMuted,fontFamily:"monospace"}}>{s.admission_no}</div></td>
+                <td style={{padding:"10px 13px",fontSize:11,color:C.textMuted}}>{s.submitted_at?new Date(s.submitted_at).toLocaleDateString():<Badge color="gray" size="sm">Not submitted</Badge>}</td>
+                <td style={{padding:"10px 13px",fontSize:12,maxWidth:260}}>
+                  {s.content && <div style={{whiteSpace:"pre-wrap",maxHeight:70,overflow:"auto"}}>{s.content}</div>}
+                  {s.link_url && <a href={s.link_url} target="_blank" rel="noreferrer" style={{color:C.accentDark,fontSize:11}}>🔗 link</a>}
+                  {!s.content && !s.link_url && "—"}
+                </td>
+                <td style={{padding:"10px 13px"}}>
+                  {s.submission_id ? <input type="number" min={0} max={a.max_marks} value={(marks[s.submission_id]||{}).marks ?? ""} onChange={e=>setMarks(p=>({...p,[s.submission_id]:{...(p[s.submission_id]||{}),marks:e.target.value}}))} style={{width:60,padding:"6px 8px",borderRadius:7,border:`1px solid ${C.border}`,fontSize:13,textAlign:"center",color:C.text}}/> : <span style={{color:C.textMuted}}>—</span>}
+                </td>
+                <td style={{padding:"10px 13px"}}>
+                  {s.submission_id ? <input value={(marks[s.submission_id]||{}).feedback ?? ""} onChange={e=>setMarks(p=>({...p,[s.submission_id]:{...(p[s.submission_id]||{}),feedback:e.target.value}}))} placeholder="Feedback…" style={{width:150,padding:"6px 8px",borderRadius:7,border:`1px solid ${C.border}`,fontSize:12,color:C.text}}/> : null}
+                </td>
+                <td style={{padding:"10px 13px"}}>
+                  {s.submission_id ? <Btn size="sm" variant="primary" onClick={()=>saveGrade(s)} disabled={savingId===s.submission_id}>{savingId===s.submission_id?"…":"Save"}</Btn> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 };
@@ -7516,10 +7568,12 @@ const Login = ({ onSuccess }) => {
 // STUDENT PORTAL  — exam taking with saved, auto-scored submissions
 // ═══════════════════════════════════════════════════════════════════════════════
 const StudentPortal = ({ user, school, onLogout }) => {
-  const [tab,        setTab]        = useState("exams");   // exams | results
+  const [tab,        setTab]        = useState("exams");   // exams | results | assignments
   const [view,       setView]       = useState("list");    // list | take
   const [exams,      setExams]      = useState([]);
   const [results,    setResults]    = useState([]);
+  const [assignments,setAssignments]= useState([]);
+  const [submitAsg,  setSubmitAsg]  = useState(null);      // assignment being submitted
   const [reviewing,  setReviewing]  = useState(null);      // { submission, questions } corrections view
   const [reviewBusy, setReviewBusy] = useState(false);
   const [loading,    setLoading]    = useState(true);
@@ -7536,7 +7590,8 @@ const StudentPortal = ({ user, school, onLogout }) => {
 
   const loadExams   = () => { setLoading(true); getMyExams().then(r => setExams(arrOf(r))).catch(() => setExams([])).finally(() => setLoading(false)); };
   const loadResults = () => getMyResults().then(r => setResults(arrOf(r))).catch(() => setResults([]));
-  useEffect(() => { loadExams(); loadResults(); }, []);
+  const loadAssignments = () => getMyOnlineAssignments().then(r => setAssignments(arrOf(r))).catch(() => setAssignments([]));
+  useEffect(() => { loadExams(); loadResults(); loadAssignments(); }, []);
 
   const openReview = async (subId) => {
     setReviewBusy(true);
@@ -7715,7 +7770,7 @@ const StudentPortal = ({ user, school, onLogout }) => {
       {header}
       <div style={{ maxWidth:920, margin:"0 auto", padding:22 }}>
         <div style={{ display:"flex", gap:8, marginBottom:18 }}>
-          {[["exams","📝 My Exams"],["results","📊 My Results"]].map(([id,l]) => (
+          {[["exams","📝 My Exams"],["results","📊 My Results"],["assignments","📚 Assignments"]].map(([id,l]) => (
             <button key={id} onClick={() => { setTab(id); setReviewing(null); }} style={{ padding:"8px 16px", borderRadius:9, border:`1px solid ${tab===id?C.accent:C.border}`, background:tab===id?C.accentLight:C.surface, color:tab===id?C.accentDark:C.textMid, fontSize:13, fontWeight:600, cursor:"pointer" }}>{l}</button>
           ))}
         </div>
@@ -7814,9 +7869,67 @@ const StudentPortal = ({ user, school, onLogout }) => {
             ))}
           </div>
         ))}
+
+        {tab==="assignments" && (assignments.length===0 ? (
+          <Card style={{ textAlign:"center", padding:"48px 16px" }}><div style={{ fontSize:34, marginBottom:10 }}>📚</div><div style={{ fontSize:15, fontWeight:700, marginBottom:6 }}>No assignments</div><div style={{ fontSize:13, color:C.textMid }}>Assignments from your teachers will appear here.</div></Card>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
+            {assignments.map(a=>{
+              const graded = a.marks!=null;
+              const over = a.due_date && new Date(a.due_date) < new Date(new Date().toDateString());
+              return (
+              <Card key={a.id}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:14, fontWeight:700 }}>{a.title}</div>
+                    <div style={{ fontSize:11, color:C.textMuted, marginTop:2 }}>{[a.subject_name, a.due_date?`Due ${a.due_date}`:null, `${a.max_marks} marks`].filter(Boolean).join(" · ")}</div>
+                    {a.instructions && <div style={{ fontSize:12, color:C.textMid, marginTop:6, whiteSpace:"pre-wrap" }}>{a.instructions}</div>}
+                    {a.resource_url && <a href={a.resource_url} target="_blank" rel="noreferrer" style={{ fontSize:12, color:C.accentDark, display:"inline-block", marginTop:4 }}>🔗 Resource</a>}
+                  </div>
+                  <div style={{ textAlign:"right" }}>
+                    {graded
+                      ? <><div style={{ fontSize:16, fontWeight:800, color:C.accentDark }}>{a.marks}/{a.max_marks}</div><Badge color="green" size="sm">Graded</Badge></>
+                      : a.submitted ? <Badge color="blue" size="sm">Submitted</Badge> : <Badge color={over?"red":"amber"} size="sm">{over?"Overdue":"Pending"}</Badge>}
+                  </div>
+                </div>
+                {graded && a.feedback && <div style={{ marginTop:8, padding:"8px 11px", borderRadius:8, background:C.accentLight, fontSize:12 }}><strong>Feedback:</strong> {a.feedback}</div>}
+                {!graded && <div style={{ display:"flex", justifyContent:"flex-end", marginTop:10 }}><Btn variant={a.submitted?"secondary":"primary"} size="sm" onClick={()=>setSubmitAsg(a)}>{a.submitted?"Edit Submission":"Submit"}</Btn></div>}
+              </Card>
+            );})}
+          </div>
+        ))}
       </div>
+      {submitAsg && <AsgSubmitModal assignment={submitAsg} onClose={()=>setSubmitAsg(null)} onDone={()=>{setSubmitAsg(null); loadAssignments();}} flash={flash}/>}
       {toast && <div style={{ position:"fixed", bottom:26, right:26, zIndex:2000, background:C.navy, color:"#fff", padding:"11px 18px", borderRadius:11, fontSize:12, fontWeight:600 }}>{toast}</div>}
     </div>
+  );
+};
+
+// Student's assignment submission (text answer + optional link).
+const AsgSubmitModal = ({ assignment, onClose, onDone, flash }) => {
+  const [content, setContent] = useState(assignment.content || "");
+  const [link, setLink]       = useState(assignment.link_url || "");
+  const [saving, setSaving]   = useState(false);
+  const submit = async () => {
+    if (!content.trim() && !link.trim()) { flash("Enter your answer or a link."); return; }
+    setSaving(true);
+    try { await submitMyAssignment({ assignment_id: assignment.id, content, link_url: link }); flash("Submitted."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not submit."); setSaving(false); }
+  };
+  return (
+    <Modal title={assignment.title} onClose={saving?()=>{}:onClose} width={540}>
+      {assignment.instructions && <div style={{ fontSize:12, color:C.textMid, marginBottom:12, whiteSpace:"pre-wrap" }}>{assignment.instructions}</div>}
+      <label style={{ fontSize:11, fontWeight:700, color:C.textMid, textTransform:"uppercase", letterSpacing:".4px", display:"block", marginBottom:4 }}>Your Answer</label>
+      <textarea value={content} onChange={e=>setContent(e.target.value)} placeholder="Type your answer…"
+        style={{ width:"100%", padding:"10px 13px", borderRadius:9, border:`1px solid ${C.border}`, fontSize:13, minHeight:140, resize:"vertical", outline:"none", fontFamily:"Sora,sans-serif", lineHeight:1.6, color:C.text }}/>
+      <div style={{ marginTop:12 }}>
+        <Input label="Attachment Link (optional)" value={link} onChange={setLink} placeholder="https://… (Google Doc, Drive, etc.)"/>
+      </div>
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:16 }}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving}>{saving?"Submitting…":"Submit"}</Btn>
+      </div>
+    </Modal>
   );
 };
 

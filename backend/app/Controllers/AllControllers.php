@@ -2019,6 +2019,106 @@ class AnalyticsController {
     }
 }
 
+// ─── AssignmentController ─────────────────────────────────────────────────────
+// Online assignments a teacher posts for a class; students submit; teacher grades.
+class AssignmentController {
+    // Admin, the class's form teacher, or a teacher of the subject in that class.
+    private static function assertCanManage(array $user, int $classId, ?int $subjectId): void {
+        if (Perm::isAdmin($user)) return;
+        if (Perm::canManageClass($user, $classId)) return;
+        if ($subjectId && Perm::teachesSubjectInClass($user, $classId, $subjectId)) return;
+        respond(null, 403, 'You can only manage assignments for your own classes.');
+    }
+
+    private static function load(array $user, int $id): array {
+        $a = DB::one('SELECT * FROM assignments WHERE id=? AND school_id=?', [$id, (int)$user['school_id']]);
+        if (!$a) respond(null, 404, 'Assignment not found');
+        return $a;
+    }
+
+    // List assignments (admins: all; staff: their classes). ?class_id= filters.
+    public static function index(array $user): void {
+        $sid = (int)$user['school_id'];
+        $where = ['a.school_id = ?']; $params = [$sid];
+        if ($cid = (int)($_GET['class_id'] ?? 0)) { $where[] = 'a.class_id = ?'; $params[] = $cid; }
+        if (!Perm::isAdmin($user)) {
+            $cids = Perm::teacherClassIds($user);
+            if (!$cids) { respond([]); }
+            $where[] = 'a.class_id IN (' . implode(',', array_fill(0, count($cids), '?')) . ')';
+            $params = array_merge($params, $cids);
+        }
+        $sql = 'SELECT a.*, c.name AS class_name, sub.name AS subject_name,
+                       (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id=a.id) AS submitted,
+                       (SELECT COUNT(*) FROM assignment_submissions s WHERE s.assignment_id=a.id AND s.marks IS NOT NULL) AS graded,
+                       (SELECT COUNT(*) FROM students st WHERE st.class_id=a.class_id AND st.deleted_at IS NULL) AS class_size
+                FROM assignments a
+                JOIN classes c ON c.id=a.class_id
+                LEFT JOIN subjects sub ON sub.id=a.subject_id
+                WHERE ' . implode(' AND ', $where) . ' ORDER BY a.created_at DESC';
+        respond(DB::query($sql, $params));
+    }
+
+    public static function store(array $user): void {
+        $b = body();
+        $classId = (int)($b['class_id'] ?? 0);
+        $subjectId = ($b['subject_id'] ?? null) ? (int)$b['subject_id'] : null;
+        $title = trim((string)($b['title'] ?? ''));
+        if (!$classId || $title === '') respond(null, 422, 'Class and title are required.');
+        self::assertCanManage($user, $classId, $subjectId);
+        $id = DB::exec('INSERT INTO assignments (school_id,class_id,subject_id,term_id,title,instructions,resource_url,due_date,max_marks,created_by)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)',
+            [(int)$user['school_id'], $classId, $subjectId, ($b['term_id'] ?? null) ?: null, $title,
+             ($b['instructions'] ?? null) ?: null, ($b['resource_url'] ?? null) ?: null, ($b['due_date'] ?? null) ?: null,
+             (int)($b['max_marks'] ?? 100), (int)$user['id']]);
+        respond(['id' => $id], 201, 'Assignment posted');
+    }
+
+    public static function update(array $user, int $id): void {
+        $a = self::load($user, $id);
+        self::assertCanManage($user, (int)$a['class_id'], $a['subject_id'] ? (int)$a['subject_id'] : null);
+        $b = body();
+        DB::run('UPDATE assignments SET title=COALESCE(?,title), instructions=?, resource_url=?, due_date=?, max_marks=COALESCE(?,max_marks), subject_id=? WHERE id=? AND school_id=?',
+            [($b['title'] ?? null) ?: null, ($b['instructions'] ?? null) ?: null, ($b['resource_url'] ?? null) ?: null,
+             ($b['due_date'] ?? null) ?: null, isset($b['max_marks']) ? (int)$b['max_marks'] : null,
+             ($b['subject_id'] ?? null) ? (int)$b['subject_id'] : null, $id, (int)$user['school_id']]);
+        respond(['updated' => true]);
+    }
+
+    public static function destroy(array $user, int $id): void {
+        $a = self::load($user, $id);
+        self::assertCanManage($user, (int)$a['class_id'], $a['subject_id'] ? (int)$a['subject_id'] : null);
+        DB::run('DELETE FROM assignments WHERE id=? AND school_id=?', [$id, (int)$user['school_id']]);  // submissions cascade
+        respond(['deleted' => true]);
+    }
+
+    // Every student in the assignment's class with their submission (if any).
+    public static function submissions(array $user, int $id): void {
+        $a = self::load($user, $id);
+        self::assertCanManage($user, (int)$a['class_id'], $a['subject_id'] ? (int)$a['subject_id'] : null);
+        $rows = DB::query(
+            'SELECT st.id AS student_id, st.student_id AS admission_no, u.first_name, u.last_name,
+                    s.id AS submission_id, s.content, s.link_url, s.submitted_at, s.marks, s.feedback
+             FROM students st JOIN users u ON u.id=st.user_id
+             LEFT JOIN assignment_submissions s ON s.assignment_id=? AND s.student_id=st.id
+             WHERE st.class_id=? AND st.deleted_at IS NULL
+             ORDER BY u.last_name, u.first_name', [$id, (int)$a['class_id']]);
+        respond(['assignment' => $a, 'submissions' => $rows]);
+    }
+
+    // Grade one submission (marks + feedback).
+    public static function grade(array $user, int $subId): void {
+        $sub = DB::one('SELECT s.*, a.class_id, a.subject_id, a.school_id, a.max_marks
+                        FROM assignment_submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.id=?', [$subId]);
+        if (!$sub || (int)$sub['school_id'] !== (int)$user['school_id']) respond(null, 404, 'Submission not found');
+        self::assertCanManage($user, (int)$sub['class_id'], $sub['subject_id'] ? (int)$sub['subject_id'] : null);
+        $b = body();
+        $marks = ($b['marks'] === '' || $b['marks'] === null) ? null : max(0.0, min((float)$sub['max_marks'], (float)$b['marks']));
+        DB::run('UPDATE assignment_submissions SET marks=?, feedback=?, graded_by=?, graded_at=NOW() WHERE id=?',
+            [$marks, ($b['feedback'] ?? null) ?: null, (int)$user['id'], $subId]);
+        respond(['graded' => true, 'marks' => $marks]);
+    }
+}
+
 // ─── LibraryController ────────────────────────────────────────────────────────
 class LibraryController {
     public static function books(array $user): void {
@@ -2404,6 +2504,44 @@ class StudentPortalController {
             ],
             'questions' => $questions,
         ]);
+    }
+
+    // Assignments for this student's class, with their submission state.
+    public static function myAssignments(array $user): void {
+        $s = self::me($user);
+        $rows = DB::query(
+            'SELECT a.id, a.title, a.instructions, a.resource_url, a.due_date, a.max_marks, a.created_at,
+                    sub.name AS subject_name,
+                    asm.id AS submission_id, asm.content, asm.link_url, asm.submitted_at, asm.marks, asm.feedback
+             FROM assignments a
+             LEFT JOIN subjects sub ON sub.id=a.subject_id
+             LEFT JOIN assignment_submissions asm ON asm.assignment_id=a.id AND asm.student_id=?
+             WHERE a.class_id=? ORDER BY (a.due_date IS NULL), a.due_date ASC, a.created_at DESC',
+            [$s['id'], $s['class_id']]);
+        foreach ($rows as &$r) {
+            $r['submitted'] = !empty($r['submission_id']);
+            $r['graded']    = $r['marks'] !== null;
+        }
+        respond($rows);
+    }
+
+    // Create or update this student's submission for an assignment.
+    public static function submitAssignment(array $user): void {
+        $s = self::me($user);
+        $b = body();
+        $aid = (int)($b['assignment_id'] ?? 0);
+        $a = DB::one('SELECT id, class_id FROM assignments WHERE id=? AND school_id=?', [$aid, (int)$user['school_id']]);
+        if (!$a || (int)$a['class_id'] !== (int)$s['class_id']) respond(null, 404, 'Assignment not found for your class.');
+        $content = trim((string)($b['content'] ?? ''));
+        $link    = trim((string)($b['link_url'] ?? ''));
+        if ($content === '' && $link === '') respond(null, 422, 'Enter your answer or a link.');
+        // Re-submitting before grading updates the submission; after grading it is locked.
+        $existing = DB::one('SELECT id, marks FROM assignment_submissions WHERE assignment_id=? AND student_id=?', [$aid, $s['id']]);
+        if ($existing && $existing['marks'] !== null) respond(null, 409, 'This assignment has already been graded.');
+        DB::exec('INSERT INTO assignment_submissions (assignment_id,student_id,content,link_url,submitted_at) VALUES (?,?,?,?,NOW())
+                  ON DUPLICATE KEY UPDATE content=VALUES(content), link_url=VALUES(link_url), submitted_at=NOW()',
+            [$aid, $s['id'], $content ?: null, $link ?: null]);
+        respond(['submitted' => true], 201, 'Submitted');
     }
 
     // Robustly compare a student's answer to the stored correct answer.
