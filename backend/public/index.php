@@ -384,6 +384,19 @@ try {
     } elseif ($path === '/api/v1/hr/payroll/pay' && $method === 'POST') {
         HRController::payPayroll(authGuard());
 
+    // ── Analytics (read-only dashboards) ────────────────────────────────────────
+    } elseif ($path === '/api/v1/analytics/performance' && $method === 'GET') {
+        AnalyticsController::performance(authGuard());
+
+    } elseif ($path === '/api/v1/analytics/attendance' && $method === 'GET') {
+        AnalyticsController::attendance(authGuard());
+
+    } elseif ($path === '/api/v1/analytics/finance' && $method === 'GET') {
+        AnalyticsController::finance(authGuard());
+
+    } elseif ($path === '/api/v1/analytics/admissions' && $method === 'GET') {
+        AnalyticsController::admissions(authGuard());
+
     // ── Library ───────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/library/books' && $method === 'GET') {
         LibraryController::books(authGuard());

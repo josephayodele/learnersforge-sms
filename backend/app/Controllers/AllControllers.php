@@ -1943,6 +1943,82 @@ class HRController {
     }
 }
 
+// ─── AnalyticsController ──────────────────────────────────────────────────────
+// Read-only reporting dashboards aggregated from live data: student performance,
+// attendance, finance, admissions. Admin-only; all scoped to the school.
+class AnalyticsController {
+    // Resolve the term to report on: ?term_id=, else the current term, else latest.
+    private static function termId(array $user): int {
+        $t = (int)($_GET['term_id'] ?? 0);
+        if ($t) return $t;
+        $sid = (int)$user['school_id'];
+        $row = DB::one('SELECT t.id FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id
+                        WHERE ay.school_id=? ORDER BY t.is_current DESC, t.id DESC LIMIT 1', [$sid]);
+        return (int)($row['id'] ?? 0);
+    }
+
+    public static function performance(array $user): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id']; $term = self::termId($user);
+        // Derived per (student, subject) total score for the term (CA + exam summed).
+        $t = '(SELECT g.student_id, g.subject_id, st.class_id, SUM(g.score) total
+               FROM grades g JOIN students st ON st.id=g.student_id JOIN users u ON u.id=st.user_id
+               WHERE g.term_id=? AND u.school_id=? GROUP BY g.student_id, g.subject_id, st.class_id)';
+        $bySubject = DB::query("SELECT sub.name AS label, ROUND(AVG(t.total),1) AS value FROM $t t JOIN subjects sub ON sub.id=t.subject_id GROUP BY t.subject_id ORDER BY value DESC", [$term,$sid]);
+        $byClass   = DB::query("SELECT c.name AS label, ROUND(AVG(t.total),1) AS value FROM $t t JOIN classes c ON c.id=t.class_id GROUP BY t.class_id ORDER BY c.name", [$term,$sid]);
+        $summary   = DB::one("SELECT ROUND(AVG(so.avg_pct),1) school_average, COALESCE(SUM(so.avg_pct<50),0) at_risk, COALESCE(SUM(so.avg_pct>=80),0) distinction, ROUND(MAX(so.avg_pct),1) top
+                              FROM (SELECT t.student_id, AVG(t.total) avg_pct FROM $t t GROUP BY t.student_id) so", [$term,$sid]);
+        $rankings  = DB::query("SELECT c.name AS class_name, ROUND(AVG(so.avg_pct),1) avg, COALESCE(SUM(so.avg_pct>=50),0) passed, COALESCE(SUM(so.avg_pct<50),0) failed
+                                FROM (SELECT t.student_id, t.class_id, AVG(t.total) avg_pct FROM $t t GROUP BY t.student_id, t.class_id) so
+                                JOIN classes c ON c.id=so.class_id GROUP BY so.class_id ORDER BY avg DESC", [$term,$sid]);
+        respond(['term_id'=>$term, 'summary'=>$summary ?: ['school_average'=>null,'at_risk'=>0,'distinction'=>0,'top'=>null],
+                 'by_subject'=>$bySubject, 'by_class'=>$byClass, 'rankings'=>$rankings]);
+    }
+
+    public static function attendance(array $user): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id']; $term = self::termId($user);
+        $overall = DB::one("SELECT COUNT(*) total, COALESCE(SUM(a.status NOT LIKE 'absent%'),0) present
+                            FROM attendance a JOIN students st ON st.id=a.student_id JOIN users u ON u.id=st.user_id
+                            WHERE a.term_id=? AND u.school_id=?", [$term,$sid]);
+        $total = (int)($overall['total'] ?? 0); $present = (int)($overall['present'] ?? 0);
+        $byClass = DB::query("SELECT c.name AS label, ROUND(100*SUM(a.status NOT LIKE 'absent%')/COUNT(*),1) AS value
+                              FROM attendance a JOIN classes c ON c.id=a.class_id JOIN students st ON st.id=a.student_id JOIN users u ON u.id=st.user_id
+                              WHERE a.term_id=? AND u.school_id=? GROUP BY a.class_id ORDER BY value DESC", [$term,$sid]);
+        $chronic = (int)(DB::one("SELECT COUNT(*) c FROM (SELECT a.student_id FROM attendance a JOIN students st ON st.id=a.student_id JOIN users u ON u.id=st.user_id
+                            WHERE a.term_id=? AND u.school_id=? AND a.status LIKE 'absent%' GROUP BY a.student_id HAVING COUNT(*)>5) x", [$term,$sid])['c'] ?? 0);
+        respond(['term_id'=>$term, 'overall_rate'=>$total?round(100*$present/$total,1):null, 'records'=>$total, 'present'=>$present,
+                 'chronic_absent'=>$chronic, 'by_class'=>$byClass]);
+    }
+
+    public static function finance(array $user): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id']; $term = self::termId($user);
+        $inv = DB::one('SELECT COALESCE(SUM(i.total_amount),0) invoiced, COALESCE(SUM(i.amount_paid),0) collected, COALESCE(SUM(i.balance),0) outstanding
+                        FROM invoices i JOIN students s ON s.id=i.student_id JOIN users u ON u.id=s.user_id WHERE u.school_id=?', [$sid]);
+        $exp = (float)(DB::one('SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE school_id=?', [$sid])['t'] ?? 0);
+        $invoiced = (float)($inv['invoiced'] ?? 0); $collected = (float)($inv['collected'] ?? 0);
+        $byTerm = DB::query('SELECT t.name AS label, COALESCE(SUM(i.amount_paid),0) AS value
+                             FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id AND ay.school_id=?
+                             LEFT JOIN invoices i ON i.term_id=t.id GROUP BY t.id ORDER BY t.id', [$sid]);
+        $byCat  = DB::query('SELECT category AS label, COALESCE(SUM(amount),0) AS value FROM expenses WHERE school_id=? GROUP BY category ORDER BY value DESC', [$sid]);
+        respond(['invoiced'=>$invoiced, 'collected'=>$collected, 'outstanding'=>(float)($inv['outstanding'] ?? 0),
+                 'expenses'=>$exp, 'net'=>$collected-$exp, 'collection_rate'=>$invoiced?round(100*$collected/$invoiced,1):null,
+                 'by_term'=>$byTerm, 'by_category'=>$byCat]);
+    }
+
+    public static function admissions(array $user): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id'];
+        $byStatus = DB::query('SELECT status AS label, COUNT(*) AS value FROM admission_applications WHERE school_id=? GROUP BY status', [$sid]);
+        $total = array_sum(array_map(fn($r)=>(int)$r['value'], $byStatus));
+        $byClass = DB::query('SELECT COALESCE(NULLIF(apply_class,""),"Unspecified") AS label, COUNT(*) AS value FROM admission_applications WHERE school_id=? GROUP BY apply_class ORDER BY value DESC', [$sid]);
+        $byGender = DB::query('SELECT COALESCE(gender,"unspecified") AS label, COUNT(*) AS value FROM admission_applications WHERE school_id=? GROUP BY gender', [$sid]);
+        $enrolled = (int)(DB::one('SELECT COUNT(*) c FROM students s JOIN users u ON u.id=s.user_id WHERE u.school_id=? AND s.deleted_at IS NULL', [$sid])['c'] ?? 0);
+        respond(['total'=>$total, 'enrolled'=>$enrolled, 'by_status'=>$byStatus, 'by_class'=>$byClass, 'by_gender'=>$byGender]);
+    }
+}
+
 // ─── LibraryController ────────────────────────────────────────────────────────
 class LibraryController {
     public static function books(array $user): void {

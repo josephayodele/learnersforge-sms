@@ -15,6 +15,7 @@ import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadshe
          getMyExams, getMyExam, submitMyExam, getMyResults, getMyResultDetail, getPublicSchoolInfo,
          getRoutes, createRoute, updateRoute, deleteRoute, getTransportAssignments, assignTransport, unassignTransport, recordTransportFee,
          getStaffAttendance, saveStaffAttendance as apiSaveStaffAttendance, getLeave, requestLeave, decideLeave, getHrPayroll, savePayroll, markPayrollPaid,
+         getPerfAnalytics, getAttAnalytics, getFinanceAnalytics, getAdmissionAnalytics,
          login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
@@ -7294,143 +7295,149 @@ const Communications = () => {
 // 11. REPORTS & ANALYTICS (enhanced)
 // ═══════════════════════════════════════════════════════════════════════════════
 const Analytics = () => {
-  const [tab, setTab] = useState("performance");
+  const [tab, setTab]     = useState("performance");
+  const [terms, setTerms] = useState([]);
+  const [termId, setTermId] = useState(null);
+  const [perf, setPerf]   = useState(null);
+  const [att, setAtt]     = useState(null);
+  const [fin, setFin]     = useState(null);
+  const [adm, setAdm]     = useState(null);
+  const [loading, setLoading] = useState(false);
+  const money = n => { n = Number(n||0); return n>=1e6 ? "₦"+(n/1e6).toFixed(1)+"M" : n>=1e3 ? "₦"+(n/1e3).toFixed(0)+"k" : "₦"+n.toLocaleString(); };
+  const unwrap = r => r?.data ?? r;
 
-  const BarChart = ({ data, color = C.accent, height = 100 }) => {
-    const max = Math.max(...data.map(d => d.value));
+  useEffect(() => {
+    getTerms().then(r => { const ts = arrOf(r); setTerms(ts); const cur = ts.find(t=>t.is_current)||ts[0]; setTermId(cur?.id ?? null); }).catch(()=>{});
+  }, []);
+
+  useEffect(() => {
+    if (termId===null && tab!=="admissions") return;
+    setLoading(true);
+    const done = () => setLoading(false);
+    if (tab==="performance") getPerfAnalytics(termId).then(r=>setPerf(unwrap(r))).catch(()=>setPerf(null)).finally(done);
+    else if (tab==="attendance") getAttAnalytics(termId).then(r=>setAtt(unwrap(r))).catch(()=>setAtt(null)).finally(done);
+    else if (tab==="finance") getFinanceAnalytics(termId).then(r=>setFin(unwrap(r))).catch(()=>setFin(null)).finally(done);
+    else if (tab==="admissions") getAdmissionAnalytics().then(r=>setAdm(unwrap(r))).catch(()=>setAdm(null)).finally(done);
+  }, [tab, termId]);
+
+  const BarChart = ({ data, color = C.accent, height = 120, fmt }) => {
+    const rows = (data||[]).filter(d => d && d.value!=null);
+    if (!rows.length) return <div style={{fontSize:12,color:C.textMuted,padding:"24px 0",textAlign:"center"}}>No data yet.</div>;
+    const max = Math.max(...rows.map(d => Number(d.value))) || 1;
     return (
       <div style={{ display:"flex", alignItems:"flex-end", gap:8, height }}>
-        {data.map((d, i) => (
-          <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
-            <div style={{ fontSize:10, fontWeight:600, color:C.textMid }}>{d.value}{d.unit||""}</div>
-            <div style={{ width:"100%", background:color, borderRadius:"4px 4px 0 0", height:Math.round((d.value/max)*(height-24)) }}/>
-            <div style={{ fontSize:9, color:C.textMuted, textAlign:"center", lineHeight:1.2 }}>{d.label}</div>
+        {rows.map((d, i) => (
+          <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:0 }}>
+            <div style={{ fontSize:10, fontWeight:600, color:C.textMid }}>{fmt?fmt(d.value):d.value}{d.unit||""}</div>
+            <div style={{ width:"100%", background:color, borderRadius:"4px 4px 0 0", height:Math.max(2,Math.round((Number(d.value)/max)*(height-24))) }}/>
+            <div style={{ fontSize:9, color:C.textMuted, textAlign:"center", lineHeight:1.2, overflow:"hidden", textOverflow:"ellipsis", maxWidth:"100%", whiteSpace:"nowrap" }}>{d.label}</div>
           </div>
         ))}
       </div>
     );
   };
 
+  const Bars = ({ rows, max, fmt, colorFor }) => {
+    if (!rows || !rows.length) return <div style={{fontSize:12,color:C.textMuted,padding:"16px 0"}}>No data yet.</div>;
+    const m = max || Math.max(1, ...rows.map(r=>Number(r.value)||0));
+    return rows.map((r,i)=>{const pct=Math.round((Number(r.value)||0)/m*100);const col=colorFor?colorFor(Number(r.value)):C.accent;return(
+      <div key={i} style={{marginBottom:9}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}><span style={{fontWeight:600,textTransform:"capitalize"}}>{r.label}</span><span style={{color:C.textMid}}>{fmt?fmt(r.value):r.value}</span></div>
+        <div style={{height:6,borderRadius:99,background:C.border}}><div style={{height:6,borderRadius:99,background:col,width:pct+"%"}}/></div>
+      </div>
+    );});
+  };
+
+  const findVal = (arr, label) => (arr||[]).find(s=>s.label===label)?.value ?? 0;
+
   return (
     <div className="fi">
-      <Tabs tabs={[{id:"performance",label:"📊 Student Performance"},{id:"attendance",label:"✅ Attendance Analytics"},{id:"finance",label:"💰 Financial Reports"},{id:"admissions",label:"🎓 Admission Stats"}]} active={tab} onChange={setTab}/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <Tabs tabs={[{id:"performance",label:"📊 Student Performance"},{id:"attendance",label:"✅ Attendance Analytics"},{id:"finance",label:"💰 Financial Reports"},{id:"admissions",label:"🎓 Admission Stats"}]} active={tab} onChange={setTab}/>
+        {tab!=="admissions" && terms.length>0 && (
+          <Sel value={termId?String(termId):""} onChange={v=>setTermId(Number(v))} options={terms.map(t=>({value:String(t.id),label:t.name+(t.is_current?" (current)":"")}))} style={{width:190}}/>
+        )}
+      </div>
       <div style={{ marginTop:16 }}>
+        {loading && <Card style={{textAlign:"center",color:C.textMuted,padding:"20px"}}>Loading…</Card>}
 
-        {tab==="performance" && (
+        {tab==="performance" && perf && (
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12 }}>
-              <StatCard label="School Average"  value="68.4%" color={C.accent}  icon="📊"/>
-              <StatCard label="Top Scorer"       value="96%"   color={C.sky}     icon="🏆"/>
-              <StatCard label="Below 50% (At Risk)" value="47" color={C.coral}  icon="⚠️"/>
-              <StatCard label="Above 80% (Distinction)" value="128" color={C.accent} icon="⭐"/>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:12 }}>
+              <StatCard label="School Average" value={perf.summary?.school_average!=null?perf.summary.school_average+"%":"—"} color={C.accent} icon="📊"/>
+              <StatCard label="Top Overall" value={perf.summary?.top!=null?perf.summary.top+"%":"—"} color={C.sky} icon="🏆"/>
+              <StatCard label="At Risk (<50%)" value={perf.summary?.at_risk ?? 0} color={C.coral} icon="⚠️"/>
+              <StatCard label="Distinction (≥80%)" value={perf.summary?.distinction ?? 0} color={C.accentDark} icon="⭐"/>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-              <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Performance by Subject (School Average)</div>
-                <BarChart data={[{label:"Maths",value:72},{label:"English",value:78},{label:"Biology",value:65},{label:"Physics",value:61},{label:"Chemistry",value:58},{label:"History",value:74}]} color={C.accent}/>
-              </Card>
-              <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Performance by Class</div>
-                <BarChart data={CLASSES.slice(0,6).map((c,i)=>({label:c,value:58+i*4}))} color={C.sky}/>
-              </Card>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))", gap:14 }}>
+              <Card><div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Average by Subject</div><BarChart data={perf.by_subject} color={C.accent}/></Card>
+              <Card><div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Average by Class</div><BarChart data={perf.by_class} color={C.sky}/></Card>
             </div>
             <Card>
               <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>📋 Class Performance Rankings</div>
+              {(!perf.rankings||!perf.rankings.length) ? <div style={{fontSize:12,color:C.textMuted}}>No grades entered for this term yet.</div> : (
               <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                <thead><tr style={{ background:"#F8FAFC" }}>{["Rank","Class","Avg Score","Top Student","No. Passed","No. Failed"].map(h=><th key={h} style={{ padding:"10px 13px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
+                <thead><tr style={{ background:"#F8FAFC" }}>{["Rank","Class","Avg Score","Passed","Failed"].map(h=><th key={h} style={{ padding:"10px 13px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {CLASSES.slice(0,6).map((cls,i)=>(
-                    <tr key={cls} style={{ borderBottom:`1px solid ${C.border}` }} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                  {perf.rankings.map((r,i)=>(
+                    <tr key={i} style={{ borderBottom:`1px solid ${C.border}` }}>
                       <td style={{ padding:"10px 13px" }}><div style={{ width:26, height:26, borderRadius:"50%", background:i<3?[C.amber,C.borderDark,C.orange][i]+"22":"#F3F4F6", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700 }}>{i+1}</div></td>
-                      <td style={{ padding:"10px 13px", fontSize:13, fontWeight:700 }}>{cls}</td>
-                      <td style={{ padding:"10px 13px", fontSize:13, fontWeight:700, color:C.accentDark }}>{74-i*2}%</td>
-                      <td style={{ padding:"10px 13px", fontSize:12 }}>{STUDENTS[i%STUDENTS.length].name}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12, color:C.accentDark, fontWeight:600 }}>{28-i}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12, color:C.coral, fontWeight:600 }}>{2+i}</td>
+                      <td style={{ padding:"10px 13px", fontSize:13, fontWeight:700 }}>{r.class_name}</td>
+                      <td style={{ padding:"10px 13px", fontSize:13, fontWeight:700, color:C.accentDark }}>{r.avg!=null?r.avg+"%":"—"}</td>
+                      <td style={{ padding:"10px 13px", fontSize:12, color:C.accentDark, fontWeight:600 }}>{r.passed}</td>
+                      <td style={{ padding:"10px 13px", fontSize:12, color:C.coral, fontWeight:600 }}>{r.failed}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              )}
             </Card>
           </div>
         )}
 
-        {tab==="attendance" && (
+        {tab==="attendance" && att && (
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12 }}>
-              <StatCard label="Overall Rate"    value="94.2%" color={C.accent} icon="✅"/>
-              <StatCard label="Perfect Attendance" value="342" sub="Students" color={C.sky} icon="⭐"/>
-              <StatCard label="Chronic Absent"  value="28"    sub="> 5 absences" color={C.coral} icon="🔴"/>
-              <StatCard label="Avg Daily Present" value="1,208" color={C.purple} icon="👥"/>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-              <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Daily Attendance — This Week</div>
-                <BarChart data={[{label:"Mon",value:94,unit:"%"},{label:"Tue",value:96,unit:"%"},{label:"Wed",value:88,unit:"%"},{label:"Thu",value:95,unit:"%"},{label:"Fri",value:97,unit:"%"}]} color={C.accent}/>
-              </Card>
-              <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Attendance by Class (This Month)</div>
-                {CLASSES.slice(0,6).map((cls,i)=>{const pct=88+i;return(
-                  <div key={cls} style={{ marginBottom:9 }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}><span style={{ fontWeight:600 }}>{cls}</span><span style={{ color:pct>=95?"green":pct>=85?C.amber:C.coral }}>{pct}%</span></div>
-                    <div style={{ height:5, borderRadius:99, background:C.border }}><div style={{ height:5, borderRadius:99, background:pct>=95?C.accent:pct>=85?C.amber:C.coral, width:pct+"%" }}/></div>
-                  </div>
-                );})}
-              </Card>
-            </div>
-          </div>
-        )}
-
-        {tab==="finance" && (
-          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12 }}>
-              <StatCard label="Total Revenue"   value="₦21.3M" color={C.accent} icon="💰"/>
-              <StatCard label="Total Expenses"  value="₦4.95M" color={C.coral}  icon="💸"/>
-              <StatCard label="Net Surplus"      value="₦16.4M" color={C.accentDark} icon="📈"/>
-              <StatCard label="Fee Collection Rate" value="76%" color={C.sky}   icon="✅"/>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-              <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Monthly Fee Collection</div>
-                <BarChart data={[{label:"Jan",value:3.2},{label:"Feb",value:4.1},{label:"Mar",value:2.8},{label:"Apr",value:3.9},{label:"May",value:4.4}]} color={C.accent}/>
-              </Card>
-              <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Expense Breakdown</div>
-                {[["Salaries",65,C.coral],["Utilities",4,C.amber],["Maintenance",7,C.sky],["Events",5,C.purple],["Supplies",2,C.teal],["Other",17,C.textMid]].map(([l,p,c])=>(
-                  <div key={l} style={{ marginBottom:8 }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}><span style={{ fontWeight:600 }}>{l}</span><span style={{ color:C.textMid }}>{p}%</span></div>
-                    <div style={{ height:5, borderRadius:99, background:C.border }}><div style={{ height:5, borderRadius:99, background:c, width:p+"%" }}/></div>
-                  </div>
-                ))}
-              </Card>
-            </div>
-          </div>
-        )}
-
-        {tab==="admissions" && (
-          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12 }}>
-              <StatCard label="Applications (2026)" value="248"  color={C.sky}    icon="📋"/>
-              <StatCard label="Approved"             value="186"  color={C.accent} icon="✅"/>
-              <StatCard label="Rejection Rate"       value="12%"  color={C.amber}  icon="📊"/>
-              <StatCard label="Enrolled"             value="174"  color={C.purple} icon="🎓"/>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:12 }}>
+              <StatCard label="Overall Rate" value={att.overall_rate!=null?att.overall_rate+"%":"—"} color={C.accent} icon="✅"/>
+              <StatCard label="Records" value={(att.records||0).toLocaleString()} color={C.sky} icon="🗓"/>
+              <StatCard label="Present Marks" value={(att.present||0).toLocaleString()} color={C.purple} icon="👥"/>
+              <StatCard label="Chronic Absent (>5)" value={att.chronic_absent ?? 0} color={C.coral} icon="🔴"/>
             </div>
             <Card>
-              <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Applications per Class</div>
-              <BarChart data={[{label:"JSS 1",value:98},{label:"JSS 2",value:42},{label:"JSS 3",value:28},{label:"SSS 1",value:56},{label:"SSS 2",value:14},{label:"SSS 3",value:10}]} color={C.purple}/>
+              <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Attendance Rate by Class</div>
+              <Bars rows={att.by_class} max={100} fmt={v=>v+"%"} colorFor={v=>v>=95?C.accent:v>=85?C.amber:C.coral}/>
             </Card>
-            <Card>
-              <div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Year-on-Year Enrollment Trend</div>
-              <div style={{ display:"flex", alignItems:"flex-end", gap:14, height:110, paddingBottom:4 }}>
-                {[{year:"2021/22",n:820},{year:"2022/23",n:940},{year:"2023/24",n:1060},{year:"2024/25",n:1180},{year:"2025/26",n:1284}].map((y,i)=>(
-                  <div key={y.year} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
-                    <div style={{ fontSize:11, fontWeight:700, color:C.textMid }}>{y.n.toLocaleString()}</div>
-                    <div style={{ width:"100%", background:i===4?C.accent:C.sky+"66", borderRadius:"5px 5px 0 0", height:Math.round(y.n/1284*86) }}/>
-                    <div style={{ fontSize:9, color:C.textMuted }}>{y.year}</div>
-                  </div>
-                ))}
-              </div>
-            </Card>
+          </div>
+        )}
+
+        {tab==="finance" && fin && (
+          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:12 }}>
+              <StatCard label="Collected" value={money(fin.collected)} color={C.accent} icon="💰"/>
+              <StatCard label="Outstanding" value={money(fin.outstanding)} color={C.coral} icon="⏳"/>
+              <StatCard label="Expenses" value={money(fin.expenses)} color={C.amber} icon="💸"/>
+              <StatCard label="Net" value={money(fin.net)} color={C.accentDark} icon="📈"/>
+              <StatCard label="Collection Rate" value={fin.collection_rate!=null?fin.collection_rate+"%":"—"} color={C.sky} icon="✅"/>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))", gap:14 }}>
+              <Card><div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Collection by Term</div><BarChart data={fin.by_term} color={C.accent} fmt={money}/></Card>
+              <Card><div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Expense Breakdown</div><Bars rows={fin.by_category} fmt={money}/></Card>
+            </div>
+          </div>
+        )}
+
+        {tab==="admissions" && adm && (
+          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:12 }}>
+              <StatCard label="Applications" value={adm.total ?? 0} color={C.sky} icon="📋"/>
+              <StatCard label="Approved" value={findVal(adm.by_status,"approved")} color={C.accent} icon="✅"/>
+              <StatCard label="Pending" value={findVal(adm.by_status,"pending")} color={C.amber} icon="⏳"/>
+              <StatCard label="Enrolled Students" value={adm.enrolled ?? 0} color={C.purple} icon="🎓"/>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))", gap:14 }}>
+              <Card><div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>Applications by Class</div><BarChart data={adm.by_class} color={C.purple}/></Card>
+              <Card><div style={{ fontSize:13, fontWeight:700, marginBottom:14 }}>By Status</div><Bars rows={adm.by_status} colorFor={()=>C.sky}/></Card>
+            </div>
           </div>
         )}
       </div>

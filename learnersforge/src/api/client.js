@@ -193,6 +193,12 @@ export const getHrPayroll        = (month, year) => api.get('/hr/payroll', { par
 export const savePayroll         = data => api.post('/hr/payroll', data);
 export const markPayrollPaid     = id => api.post('/hr/payroll/pay', { id });
 
+// ── Analytics ──────────────────────────────────────────────────────────────────
+export const getPerfAnalytics    = term_id => api.get('/analytics/performance', { params: { term_id } });
+export const getAttAnalytics     = term_id => api.get('/analytics/attendance', { params: { term_id } });
+export const getFinanceAnalytics = term_id => api.get('/analytics/finance', { params: { term_id } });
+export const getAdmissionAnalytics = () => api.get('/analytics/admissions');
+
 // ── Library ───────────────────────────────────────────────────────────────────
 export const getBooks      = () => api.get('/library/books');
 export const getLoans      = () => api.get('/library/loans');
