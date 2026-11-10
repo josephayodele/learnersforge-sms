@@ -1702,6 +1702,30 @@ class HostelController {
         respond($rows);
     }
 
+    public static function storeHostel(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $name = trim((string)($b['name'] ?? ''));
+        if ($name === '') respond(null, 422, 'Hostel name is required.');
+        $gender = in_array($b['gender'] ?? '', ['male','female','mixed'], true) ? $b['gender'] : 'mixed';
+        $id = DB::exec('INSERT INTO hostels (school_id,name,gender,capacity,matron_id) VALUES (?,?,?,?,?)',
+            [(int)$user['school_id'], $name, $gender, (int)($b['capacity'] ?? 0), !empty($b['matron_id']) ? (int)$b['matron_id'] : null]);
+        respond(['id' => $id], 201, 'Hostel block created');
+    }
+
+    public static function storeRoom(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $hostelId = (int)($b['hostel_id'] ?? 0);
+        $roomNo   = trim((string)($b['room_no'] ?? ''));
+        if (!$hostelId || $roomNo === '') respond(null, 422, 'Hostel and room number are required.');
+        if (!DB::one('SELECT id FROM hostels WHERE id=? AND school_id=?', [$hostelId, (int)$user['school_id']]))
+            respond(null, 404, 'Hostel not found.');
+        $id = DB::exec('INSERT INTO hostel_rooms (hostel_id,room_no,capacity) VALUES (?,?,?)',
+            [$hostelId, $roomNo, max(1, (int)($b['capacity'] ?? 4))]);
+        respond(['id' => $id], 201, 'Room added');
+    }
+
     public static function rooms(array $user): void {
         $hostelId = (int)($_GET['hostel_id']??0);
         $termId   = (int)($_GET['term_id']??2);
@@ -2137,6 +2161,17 @@ class LibraryController {
             [(int)$b['book_id'],(int)$b['student_id'],$b['due_date']??date('Y-m-d',strtotime('+14 days'))]);
         DB::run('UPDATE library_books SET available=available-1 WHERE id=?',[(int)$b['book_id']]);
         respond(['issued'=>true]);
+    }
+
+    public static function storeBook(array $user): void {
+        Perm::assertAdmin($user);
+        $b = body();
+        $title = trim((string)($b['title'] ?? ''));
+        if ($title === '') respond(null, 422, 'Book title is required.');
+        $total = max(1, (int)($b['total_copies'] ?? 1));
+        $id = DB::exec('INSERT INTO library_books (school_id,isbn,title,author,category,total_copies,available) VALUES (?,?,?,?,?,?,?)',
+            [(int)$user['school_id'], $b['isbn'] ?? null, $title, $b['author'] ?? null, $b['category'] ?? null, $total, $total]);
+        respond(['id' => $id], 201, 'Book added');
     }
 
     public static function returnBook(array $user): void {

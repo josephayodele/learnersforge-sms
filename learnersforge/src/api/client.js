@@ -172,6 +172,8 @@ export const getRooms      = (hostel_id, term_id = 2) =>
 export const allocateRoom  = data => api.post('/hostel/allocate', data);
 export const getVisitors   = () => api.get('/hostel/visitors');
 export const logVisitor    = data => api.post('/hostel/visitors', data);
+export const createHostel  = data => api.post('/hostels', data);
+export const createRoom    = data => api.post('/hostel/rooms', data);
 
 // ── Transport ─────────────────────────────────────────────────────────────────
 export const getRoutes              = () => api.get('/transport/routes');
@@ -223,6 +225,7 @@ export const getParentPreview    = studentId => api.get(`/communications/parent-
 // ── Library ───────────────────────────────────────────────────────────────────
 export const getBooks      = () => api.get('/library/books');
 export const getLoans      = () => api.get('/library/loans');
+export const createBook    = data => api.post('/library/books', data);
 export const issueBook     = data => api.post('/library/issue', data);
 export const returnBook    = loan_id => api.post('/library/return', { loan_id });
 

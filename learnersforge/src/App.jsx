@@ -18,6 +18,11 @@ import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadshe
          getPerfAnalytics, getAttAnalytics, getFinanceAnalytics, getAdmissionAnalytics,
          getAssignments, createAssignment, updateAssignment, deleteAssignment, getAssignmentSubmissions, gradeAssignment, getMyOnlineAssignments, submitMyAssignment,
          getAudiences, getCommunications, sendCommunication, getEvents, saveEvent as apiSaveEvent, updateEvent, deleteEvent as apiDeleteEvent, sendEventReminder, getParentPreview,
+         getInvoices, recordPayment, getExpenses, addExpense, getPayroll as apiGetPayroll, getFeeSummary,
+         getInventory, createItem, issueItem as apiIssueItem, restockItem as apiRestockItem,
+         getHostels, getRooms, allocateRoom, getVisitors, logVisitor, createHostel, createRoom,
+         getBooks, getLoans, createBook, issueBook, returnBook as apiReturnBook,
+         getMessages, sendMessage, getNotifications,
          login as apiLogin } from "./api/client";
 
 // Map a backend student row (first_name/last_name/class_name/student_id …)
@@ -4226,513 +4231,893 @@ const AITools = () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // FEES & FINANCE  — Overview, Fee Collection, Expenses, Payroll, P&L
 // ═══════════════════════════════════════════════════════════════════════════════
-const EXPENSES = [
-  {id:"E001",desc:"May Staff Salaries",        cat:"Salaries & Payroll",amount:3200000,date:"2026-05-25",by:"Accountant",status:"Paid"},
-  {id:"E002",desc:"NEPA / Generator Fuel",     cat:"Utilities",         amount:185000, date:"2026-05-22",by:"Admin",    status:"Paid"},
-  {id:"E003",desc:"Classroom Chairs (20 units)",cat:"Maintenance",      amount:360000, date:"2026-05-20",by:"Bursar",   status:"Pending"},
-  {id:"E004",desc:"Inter-House Sports Event",  cat:"Events",            amount:220000, date:"2026-05-18",by:"Admin",    status:"Paid"},
-  {id:"E005",desc:"Stationery Restock",        cat:"Supplies",          amount:95000,  date:"2026-05-15",by:"Store",    status:"Paid"},
-];
-const PAYROLL = [
-  {id:"TC001",name:"Mrs. Blessing Adeyemi",role:"Teacher",    basic:180000,housing:40000,transport:20000,ded:18000},
-  {id:"TC002",name:"Mr. Charles Osei",     role:"Teacher",    basic:175000,housing:40000,transport:20000,ded:17500},
-  {id:"TC003",name:"Ms. Ngozi Ike",        role:"Teacher",    basic:175000,housing:40000,transport:20000,ded:17500},
-  {id:"ADM1", name:"Mrs. Kemi Fashola",    role:"Admin Staff",basic:120000,housing:30000,transport:15000,ded:12000},
-  {id:"BUR1", name:"Mr. Tunde Okafor",     role:"Bursar",     basic:150000,housing:35000,transport:18000,ded:15000},
-];
-
 const Fees = () => {
-  const [tab, setTab] = useState("overview");
-  const totalExp = EXPENSES.reduce((a,e) => a+e.amount, 0);
+  const [tab, setTab]       = useState("overview");
+  const [terms, setTerms]   = useState([]);
+  const [termId, setTermId] = useState(null);
+  const [summary, setSummary]   = useState(null);
+  const [invoices, setInvoices] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [payroll, setPayroll]   = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [payFor, setPayFor]     = useState(null);   // invoice row being paid
+  const [expOpen, setExpOpen]   = useState(false);
+  const [toast, setToast]       = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+  const now = new Date();
+
+  const loadSummary  = t => getFeeSummary(t).then(r => setSummary(r?.data || null)).catch(() => setSummary(null));
+  const loadInvoices = () => getInvoices().then(r => setInvoices(arrOf(r))).catch(() => setInvoices([]));
+  const loadExpenses = () => getExpenses().then(r => setExpenses(arrOf(r))).catch(() => setExpenses([]));
+  const loadPayroll  = () => apiGetPayroll(now.getMonth() + 1, now.getFullYear()).then(r => setPayroll(arrOf(r))).catch(() => setPayroll([]));
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const ts = arrOf(await getTerms().catch(() => []));
+        if (dead) return;
+        setTerms(ts);
+        const tid = (ts.find(t => t.is_current) || ts[0])?.id ?? 2;
+        setTermId(tid);
+        await Promise.all([loadSummary(tid), loadInvoices(), loadExpenses(), loadPayroll()]);
+      } finally { if (!dead) setLoading(false); }
+    })();
+    return () => { dead = true; };
+  }, []);
+  useEffect(() => { if (termId) loadSummary(termId); }, [termId]);
+
+  const s = summary || {};
+  const invoiced = Number(s.total_invoiced || 0), collected = Number(s.total_collected || 0);
+  const exp = Number(s.total_expenses || 0), pay = Number(s.total_payroll || 0);
+  const net = collected - exp - pay;
+  const rate = invoiced > 0 ? Math.round(100 * collected / invoiced) : 0;
+  const fullName = r => [r.first_name, r.last_name].filter(Boolean).join(" ");
+  const EXP_CATS = ["salaries","utilities","maintenance","supplies","events","transport","medical","other"];
+
+  const th = { padding:"10px 14px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", letterSpacing:".4px" };
+  const empty = (icon, msg) => <Card style={{textAlign:"center",padding:"46px 16px"}}><div style={{fontSize:32,marginBottom:10}}>{icon}</div><div style={{fontSize:13,color:C.textMid}}>{msg}</div></Card>;
+
   return (
     <div className="fi">
-      <Tabs tabs={[{id:"overview",label:"📊 Overview"},{id:"fees",label:"💳 Fee Collection"},{id:"expenses",label:"💸 Expenses"},{id:"payroll",label:"👥 Payroll"},{id:"pl",label:"📈 P&L Report"}]} active={tab} onChange={setTab}/>
-      <div style={{ marginTop:16 }}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <Tabs tabs={[{id:"overview",label:"📊 Overview"},{id:"fees",label:"💳 Fee Collection"},{id:"expenses",label:"💸 Expenses"},{id:"payroll",label:"👥 Payroll"},{id:"pl",label:"📈 P&L"}]} active={tab} onChange={setTab}/>
+        {terms.length > 0 && (tab==="overview"||tab==="pl") && (
+          <Sel value={termId?String(termId):""} onChange={v=>setTermId(Number(v))}
+               options={terms.map(t=>({value:String(t.id),label:t.name+(t.is_current?" (current)":"")}))} style={{width:190}}/>
+        )}
+      </div>
+      <div style={{marginTop:16}}>
+        {loading ? <Card style={{textAlign:"center",color:C.textMuted,padding:"44px"}}>Loading finance…</Card> : <>
 
         {tab==="overview" && (
           <div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:13, marginBottom:16 }}>
-              <StatCard label="Total Invoiced"  value="₦24.2M"                              color={C.sky}    icon="📄"/>
-              <StatCard label="Fees Collected"  value="₦18.4M" sub="76% collected"          color={C.accent} icon="✅"/>
-              <StatCard label="Total Expenses"  value={`₦${(totalExp/1e6).toFixed(2)}M`}    color={C.coral}  icon="💸"/>
-              <StatCard label="Net Cash"        value={`₦${((18400000-totalExp)/1e6).toFixed(1)}M`} color={C.accentDark} icon="💰"/>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:13,marginBottom:16}}>
+              <StatCard label="Total Invoiced" value={fmtNaira(invoiced)} color={C.sky} icon="📄"/>
+              <StatCard label="Fees Collected"  value={fmtNaira(collected)} sub={`${rate}% collected`} color={C.accent} icon="✅"/>
+              <StatCard label="Expenses + Payroll" value={fmtNaira(exp+pay)} color={C.coral} icon="💸"/>
+              <StatCard label="Net Cash" value={fmtNaira(net)} color={net>=0?C.accentDark:C.coral} icon="💰"/>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:13 }}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:13}}>
               <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:13 }}>Income vs Expenses</div>
-                {[["Fee Income","₦18.4M",C.accent,76],["Payroll","₦3.2M",C.coral,13],["Operations","₦0.9M",C.amber,4],["Events & Others","₦0.3M",C.sky,1]].map(([l,v,c,p]) => (
-                  <div key={l} style={{ marginBottom:11 }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}><span style={{ fontWeight:600 }}>{l}</span><span style={{ color:C.textMid }}>{v}</span></div>
-                    <div style={{ height:6, borderRadius:99, background:C.border }}><div style={{ height:6, borderRadius:99, background:c, width:p+"%" }}/></div>
-                  </div>
-                ))}
+                <div style={{fontSize:13,fontWeight:700,marginBottom:13}}>Collection progress</div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}><span>Collected {fmtNaira(collected)}</span><span style={{color:C.textMid}}>of {fmtNaira(invoiced)}</span></div>
+                <div style={{height:8,borderRadius:99,background:C.border}}><div style={{height:8,borderRadius:99,background:C.accent,width:Math.min(100,rate)+"%"}}/></div>
+                <div style={{marginTop:16,fontSize:12.5,color:C.textMid,lineHeight:2}}>
+                  <div style={{display:"flex",justifyContent:"space-between"}}><span>Outstanding</span><b style={{color:C.coral}}>{fmtNaira(Math.max(0,invoiced-collected))}</b></div>
+                  <div style={{display:"flex",justifyContent:"space-between"}}><span>Operating expenses</span><b>{fmtNaira(exp)}</b></div>
+                  <div style={{display:"flex",justifyContent:"space-between"}}><span>Payroll (this month)</span><b>{fmtNaira(pay)}</b></div>
+                </div>
               </Card>
               <Card>
-                <div style={{ fontSize:13, fontWeight:700, marginBottom:13 }}>Recent Transactions</div>
-                {EXPENSES.slice(0,4).map(e => (
-                  <div key={e.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:`1px solid ${C.border}` }}>
-                    <div><div style={{ fontSize:12, fontWeight:600 }}>{e.desc}</div><div style={{ fontSize:10, color:C.textMuted }}>{e.date} · {e.cat}</div></div>
-                    <div style={{ textAlign:"right" }}><div style={{ fontSize:13, fontWeight:700, color:C.coral }}>-₦{e.amount.toLocaleString()}</div><Badge color={e.status==="Paid"?"green":"amber"} size="sm">{e.status}</Badge></div>
-                  </div>
-                ))}
+                <div style={{fontSize:13,fontWeight:700,marginBottom:13}}>Recent expenses</div>
+                {expenses.length===0 ? <div style={{fontSize:12.5,color:C.textMuted,padding:"18px 0",textAlign:"center"}}>No expenses recorded yet.</div> :
+                  expenses.slice(0,5).map(e=>(
+                    <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+                      <div><div style={{fontSize:12,fontWeight:600}}>{e.description}</div><div style={{fontSize:10,color:C.textMuted}}>{e.expense_date} · {e.category}</div></div>
+                      <div style={{textAlign:"right"}}><div style={{fontSize:13,fontWeight:700,color:C.coral}}>-{fmtNaira(e.amount)}</div><Badge color={e.status==="paid"?"green":"amber"} size="sm">{e.status}</Badge></div>
+                    </div>
+                  ))}
               </Card>
             </div>
           </div>
         )}
 
         {tab==="fees" && (
-          <div>
-            <div style={{ display:"flex", justifyContent:"flex-end", gap:9, marginBottom:13 }}>
-              <Btn variant="secondary" size="sm">+ Record Payment</Btn>
-              <Btn variant="primary"   size="sm">Generate Invoices</Btn>
-            </div>
-            <Card style={{ padding:0 }}>
-              <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                <thead><tr style={{ background:"#F8FAFC" }}>{["Student","Class","Term Fee","Paid","Balance","Status"].map(h=><th key={h} style={{ padding:"10px 15px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {STUDENTS.map(s => { const fee=85000, paid=s.fees==="Paid"?fee:Math.round(fee*.4); return (
-                    <tr key={s.id} style={{ borderBottom:`1px solid ${C.border}` }} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{ padding:"10px 15px" }}><div style={{ display:"flex", alignItems:"center", gap:8 }}><Avatar initials={s.avatar} size={26} color={C.accent}/><span style={{ fontSize:12, fontWeight:600 }}>{s.name}</span></div></td>
-                      <td style={{ padding:"10px 15px", fontSize:12 }}>{s.class}</td>
-                      <td style={{ padding:"10px 15px", fontSize:12, fontFamily:"monospace" }}>₦{fee.toLocaleString()}</td>
-                      <td style={{ padding:"10px 15px", fontSize:12, fontFamily:"monospace", color:C.accentDark }}>₦{paid.toLocaleString()}</td>
-                      <td style={{ padding:"10px 15px", fontSize:12, fontFamily:"monospace", color:s.fees==="Paid"?C.textMuted:C.coral }}>₦{(fee-paid).toLocaleString()}</td>
-                      <td style={{ padding:"10px 15px" }}><Badge color={s.fees==="Paid"?"green":"red"} size="sm">{s.fees}</Badge></td>
-                    </tr>
-                  ); })}
-                </tbody>
-              </table>
-            </Card>
-          </div>
+          invoices.length===0 ? empty("💳","No invoices yet. Generate invoices from the enrollment / academic setup to collect fees here.") : (
+          <Card style={{padding:0,overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
+              <thead><tr style={{background:"#F8FAFC"}}>{["Student","Class","Term","Total","Paid","Balance","Status",""].map((h,i)=><th key={i} style={th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {invoices.map(iv=>(
+                  <tr key={iv.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                    <td style={{padding:"10px 14px",fontSize:12,fontWeight:600}}>{fullName(iv)}</td>
+                    <td style={{padding:"10px 14px",fontSize:12}}>{iv.class_name}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,color:C.textMid}}>{iv.term_name}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,fontFamily:"monospace"}}>{fmtNaira(iv.total_amount)}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,fontFamily:"monospace",color:C.accentDark}}>{fmtNaira(iv.amount_paid)}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,fontFamily:"monospace",color:Number(iv.balance)>0?C.coral:C.textMuted}}>{fmtNaira(iv.balance)}</td>
+                    <td style={{padding:"10px 14px"}}><Badge color={iv.status==="paid"?"green":iv.status==="partial"?"amber":"red"} size="sm">{iv.status}</Badge></td>
+                    <td style={{padding:"10px 14px"}}>{iv.status!=="paid" && <Btn size="sm" variant="secondary" onClick={()=>setPayFor(iv)}>Record</Btn>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+          )
         )}
 
         {tab==="expenses" && (
           <div>
-            <div style={{ display:"flex", justifyContent:"flex-end", gap:9, marginBottom:13 }}>
-              <Btn variant="secondary" size="sm">📥 Export</Btn>
-              <Btn variant="primary"   size="sm">+ Add Expense</Btn>
-            </div>
-            <Card style={{ padding:0 }}>
-              <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                <thead><tr style={{ background:"#F8FAFC" }}>{["Description","Category","Amount","Date","Recorded By","Status"].map(h=><th key={h} style={{ padding:"10px 15px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:13}}><Btn variant="primary" size="sm" onClick={()=>setExpOpen(true)}>+ Add Expense</Btn></div>
+            {expenses.length===0 ? empty("💸","No expenses recorded yet.") : (
+            <Card style={{padding:0,overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",minWidth:620}}>
+                <thead><tr style={{background:"#F8FAFC"}}>{["Description","Category","Amount","Date","Status"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {EXPENSES.map(e => (
-                    <tr key={e.id} style={{ borderBottom:`1px solid ${C.border}` }} onMouseEnter={ev=>ev.currentTarget.style.background="#F8FAFC"} onMouseLeave={ev=>ev.currentTarget.style.background="transparent"}>
-                      <td style={{ padding:"10px 15px", fontSize:13, fontWeight:600 }}>{e.desc}</td>
-                      <td style={{ padding:"10px 15px" }}><Badge color="gray" size="sm">{e.cat}</Badge></td>
-                      <td style={{ padding:"10px 15px", fontSize:13, fontWeight:700, color:C.coral }}>₦{e.amount.toLocaleString()}</td>
-                      <td style={{ padding:"10px 15px", fontSize:12, color:C.textMuted }}>{e.date}</td>
-                      <td style={{ padding:"10px 15px", fontSize:12, color:C.textMid }}>{e.by}</td>
-                      <td style={{ padding:"10px 15px" }}><Badge color={e.status==="Paid"?"green":"amber"} size="sm">{e.status}</Badge></td>
+                  {expenses.map(e=>(
+                    <tr key={e.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"10px 14px",fontSize:13,fontWeight:600}}>{e.description}</td>
+                      <td style={{padding:"10px 14px"}}><Badge color="gray" size="sm">{e.category}</Badge></td>
+                      <td style={{padding:"10px 14px",fontSize:13,fontWeight:700,color:C.coral}}>{fmtNaira(e.amount)}</td>
+                      <td style={{padding:"10px 14px",fontSize:12,color:C.textMuted}}>{e.expense_date}</td>
+                      <td style={{padding:"10px 14px"}}><Badge color={e.status==="paid"?"green":"amber"} size="sm">{e.status}</Badge></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </Card>
+            )}
           </div>
         )}
 
         {tab==="payroll" && (
           <div>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:13, flexWrap:"wrap", gap:10 }}>
-              <Sel label="" value="May 2026" onChange={() => {}} options={["May 2026","April 2026","March 2026"].map(m=>({value:m,label:m}))} style={{ width:140 }}/>
-              <div style={{ display:"flex", gap:9 }}>
-                <Btn variant="secondary" size="sm">📥 Export Payslips</Btn>
-                <Btn variant="primary"   size="sm">💳 Process Payroll</Btn>
-              </div>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginBottom:14 }}>
-              <StatCard label="Total Gross"      value="₦3.45M" color={C.sky}    icon="👥"/>
-              <StatCard label="Total Deductions" value="₦345K"  color={C.amber}  icon="🔻"/>
-              <StatCard label="Net Payable"       value="₦3.11M" color={C.accent} icon="💳"/>
-            </div>
-            <Card style={{ padding:0 }}>
-              <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                <thead><tr style={{ background:"#F8FAFC" }}>{["Staff","Role","Basic","Housing","Transport","Deductions","Net Pay","Status"].map(h=><th key={h} style={{ padding:"10px 12px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
+            <div style={{fontSize:12,color:C.textMid,marginBottom:12}}>Payroll for {now.toLocaleString("en-GB",{month:"long",year:"numeric"})}. Run and manage payroll in the <b>HR Module</b>.</div>
+            {payroll.length===0 ? empty("👥","No payroll run for this month yet. Create it in the HR module.") : (
+            <Card style={{padding:0,overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
+                <thead><tr style={{background:"#F8FAFC"}}>{["Staff","Department","Basic","Allowances","Deductions","Net Pay","Status"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {PAYROLL.map(p => { const net=p.basic+p.housing+p.transport-p.ded; return (
-                    <tr key={p.id} style={{ borderBottom:`1px solid ${C.border}` }} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{ padding:"9px 12px", fontSize:12, fontWeight:600 }}>{p.name}</td>
-                      <td style={{ padding:"9px 12px" }}><Badge color="blue" size="sm">{p.role}</Badge></td>
-                      {[p.basic,p.housing,p.transport].map((v,i) => <td key={i} style={{ padding:"9px 12px", fontSize:12, fontFamily:"monospace" }}>₦{v.toLocaleString()}</td>)}
-                      <td style={{ padding:"9px 12px", fontSize:12, fontFamily:"monospace", color:C.coral }}>-₦{p.ded.toLocaleString()}</td>
-                      <td style={{ padding:"9px 12px", fontSize:13, fontWeight:700, color:C.accentDark }}>₦{net.toLocaleString()}</td>
-                      <td style={{ padding:"9px 12px" }}><Badge color="green" size="sm">Paid</Badge></td>
+                  {payroll.map(p=>{ const allw=Number(p.housing||0)+Number(p.transport||0); return (
+                    <tr key={p.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"9px 14px",fontSize:12,fontWeight:600}}>{fullName(p)}</td>
+                      <td style={{padding:"9px 14px",fontSize:12,color:C.textMid}}>{p.department||p.designation||"—"}</td>
+                      <td style={{padding:"9px 14px",fontSize:12,fontFamily:"monospace"}}>{fmtNaira(p.basic)}</td>
+                      <td style={{padding:"9px 14px",fontSize:12,fontFamily:"monospace"}}>{fmtNaira(allw)}</td>
+                      <td style={{padding:"9px 14px",fontSize:12,fontFamily:"monospace",color:C.coral}}>-{fmtNaira(p.deductions)}</td>
+                      <td style={{padding:"9px 14px",fontSize:13,fontWeight:700,color:C.accentDark}}>{fmtNaira(p.net_pay)}</td>
+                      <td style={{padding:"9px 14px"}}><Badge color={p.status==="paid"?"green":"amber"} size="sm">{p.status}</Badge></td>
                     </tr>
-                  ); })}
+                  );})}
                 </tbody>
               </table>
             </Card>
+            )}
           </div>
         )}
 
         {tab==="pl" && (
           <Card>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-              <div style={{ fontSize:13, fontWeight:700 }}>📊 Profit & Loss — 2nd Term 2025/2026</div>
-              <div style={{ display:"flex", gap:9 }}><Btn variant="secondary" size="sm">📥 PDF</Btn><Btn variant="secondary" size="sm">📊 Excel</Btn></div>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
+            <div style={{fontSize:13,fontWeight:700,marginBottom:16}}>📊 Profit &amp; Loss — {terms.find(t=>String(t.id)===String(termId))?.name || "current term"}</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
               <div>
-                <div style={{ fontSize:11, fontWeight:700, color:C.accentDark, textTransform:"uppercase", letterSpacing:".5px", marginBottom:10 }}>INCOME</div>
-                {[["Tuition Fees","₦18,400,000"],["Hostel Fees","₦2,400,000"],["Exam Fees","₦384,000"],["Misc Income","₦120,000"]].map(([l,v]) => (
-                  <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"8px 0", borderBottom:`1px solid ${C.border}`, fontSize:12 }}><span>{l}</span><span style={{ fontWeight:600, color:C.accentDark }}>{v}</span></div>
+                <div style={{fontSize:11,fontWeight:700,color:C.accentDark,textTransform:"uppercase",letterSpacing:".5px",marginBottom:10}}>Income</div>
+                {[["Fees collected",collected],["Outstanding (invoiced, unpaid)",Math.max(0,invoiced-collected)]].map(([l,v])=>(
+                  <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`,fontSize:12}}><span>{l}</span><span style={{fontWeight:600,color:C.accentDark}}>{fmtNaira(v)}</span></div>
                 ))}
-                <div style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", fontSize:13, fontWeight:700 }}><span>Total Income</span><span style={{ color:C.accentDark }}>₦21,304,000</span></div>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",fontSize:13,fontWeight:700}}><span>Total collected</span><span style={{color:C.accentDark}}>{fmtNaira(collected)}</span></div>
               </div>
               <div>
-                <div style={{ fontSize:11, fontWeight:700, color:C.coral, textTransform:"uppercase", letterSpacing:".5px", marginBottom:10 }}>EXPENSES</div>
-                {[["Salaries & Payroll","₦3,200,000"],["Utilities","₦185,000"],["Maintenance","₦360,000"],["Food & Hostel","₦890,000"],["Events","₦220,000"],["Supplies","₦95,000"]].map(([l,v]) => (
-                  <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"8px 0", borderBottom:`1px solid ${C.border}`, fontSize:12 }}><span>{l}</span><span style={{ fontWeight:600, color:C.coral }}>{v}</span></div>
+                <div style={{fontSize:11,fontWeight:700,color:C.coral,textTransform:"uppercase",letterSpacing:".5px",marginBottom:10}}>Expenses</div>
+                {[["Operating expenses",exp],["Payroll (this month)",pay]].map(([l,v])=>(
+                  <div key={l} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`,fontSize:12}}><span>{l}</span><span style={{fontWeight:600,color:C.coral}}>{fmtNaira(v)}</span></div>
                 ))}
-                <div style={{ display:"flex", justifyContent:"space-between", padding:"10px 0", fontSize:13, fontWeight:700 }}><span>Total Expenses</span><span style={{ color:C.coral }}>₦4,950,000</span></div>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",fontSize:13,fontWeight:700}}><span>Total expenses</span><span style={{color:C.coral}}>{fmtNaira(exp+pay)}</span></div>
               </div>
             </div>
-            <div style={{ marginTop:14, padding:"13px 16px", borderRadius:10, background:`linear-gradient(90deg,${C.accentLight} 0%,#fff 100%)`, border:`1px solid ${C.accent}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontSize:13, fontWeight:700 }}>NET SURPLUS (TERM)</span>
-              <span style={{ fontSize:22, fontWeight:700, color:C.accentDark }}>₦16,354,000</span>
+            <div style={{marginTop:14,padding:"13px 16px",borderRadius:10,background:`linear-gradient(90deg,${net>=0?C.accentLight:C.coralLight} 0%,#fff 100%)`,border:`1px solid ${net>=0?C.accent:C.coral}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:13,fontWeight:700}}>NET {net>=0?"SURPLUS":"DEFICIT"}</span>
+              <span style={{fontSize:22,fontWeight:700,color:net>=0?C.accentDark:C.coral}}>{fmtNaira(net)}</span>
             </div>
           </Card>
         )}
+        </>}
       </div>
+
+      {payFor && <RecordPaymentModal invoice={payFor} onClose={()=>setPayFor(null)} onDone={()=>{setPayFor(null); loadInvoices(); loadSummary(termId);}} flash={flash}/>}
+      {expOpen && <AddExpenseModal cats={EXP_CATS} onClose={()=>setExpOpen(false)} onDone={()=>{setExpOpen(false); loadExpenses(); loadSummary(termId);}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600}}>{toast}</div>}
     </div>
+  );
+};
+
+const RecordPaymentModal = ({ invoice, onClose, onDone, flash }) => {
+  const [amount, setAmount] = useState(String(invoice.balance || ""));
+  const [method, setMethod] = useState("cash");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) return flash("Enter a valid amount.");
+    setSaving(true);
+    try { await recordPayment({ invoice_id: invoice.id, amount: amt, method }); flash("Payment recorded."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not record payment."); setSaving(false); }
+  };
+  return (
+    <Modal title="Record Payment" onClose={onClose} width={440}>
+      <Card style={{background:"#F8FAFC",padding:"11px 13px",marginBottom:12}}>
+        <div style={{fontSize:11,color:C.textMuted}}>Invoice {invoice.invoice_no}</div>
+        <div style={{fontSize:13,fontWeight:700}}>{[invoice.first_name,invoice.last_name].filter(Boolean).join(" ")}</div>
+        <div style={{fontSize:11,color:C.textMid,marginTop:3}}>Balance: <b style={{color:C.coral}}>{fmtNaira(invoice.balance)}</b></div>
+      </Card>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Input label="Amount" type="number" value={amount} onChange={setAmount}/>
+        <Sel label="Method" value={method} onChange={setMethod} options={[{value:"cash",label:"Cash"},{value:"bank_transfer",label:"Bank Transfer"},{value:"online",label:"Online"},{value:"pos",label:"POS"}]}/>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Record"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
+
+const AddExpenseModal = ({ cats, onClose, onDone, flash }) => {
+  const [f, setF] = useState({ description:"", category:"other", amount:"", expense_date:new Date().toISOString().slice(0,10), status:"paid" });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!f.description.trim() || !parseFloat(f.amount)) return flash("Description and amount are required.");
+    setSaving(true);
+    try { await addExpense({ ...f, amount: parseFloat(f.amount) }); flash("Expense added."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not add expense."); setSaving(false); }
+  };
+  return (
+    <Modal title="Add Expense" onClose={onClose} width={460}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Input label="Description" value={f.description} onChange={v=>setF(s=>({...s,description:v}))} placeholder="e.g. Generator fuel"/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+          <Sel label="Category" value={f.category} onChange={v=>setF(s=>({...s,category:v}))} options={cats.map(c=>({value:c,label:c.charAt(0).toUpperCase()+c.slice(1)}))}/>
+          <Input label="Amount" type="number" value={f.amount} onChange={v=>setF(s=>({...s,amount:v}))}/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+          <Input label="Date" type="date" value={f.expense_date} onChange={v=>setF(s=>({...s,expense_date:v}))}/>
+          <Sel label="Status" value={f.status} onChange={v=>setF(s=>({...s,status:v}))} options={[{value:"paid",label:"Paid"},{value:"pending",label:"Pending"}]}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Add Expense"}</Btn></div>
+      </div>
+    </Modal>
   );
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HOSTEL MODULE
 // ═══════════════════════════════════════════════════════════════════════════════
-const DORMS = [
-  {id:"DA",name:"Block A (Boys)",  capacity:80,occupied:74,matron:"Mr. Abdullahi",rooms:20},
-  {id:"DB",name:"Block B (Girls)", capacity:80,occupied:68,matron:"Mrs. Eze",     rooms:20},
-  {id:"DC",name:"Block C (Boys)",  capacity:60,occupied:55,matron:"Mr. Ibrahim",  rooms:15},
-  {id:"DD",name:"Block D (Girls)", capacity:60,occupied:52,matron:"Mrs. Okafor",  rooms:15},
-];
-const VISITORS = [
-  {id:"V001",student:"Amara Okonkwo",visitor:"Mrs. Grace Okonkwo",relation:"Mother",  purpose:"Welfare visit", date:"2026-05-20",tin:"10:00",tout:"12:30"},
-  {id:"V002",student:"Kofi Mensah",  visitor:"Mr. Kwame Mensah",  relation:"Father",  purpose:"Fees payment",  date:"2026-05-18",tin:"14:00",tout:"15:00"},
-  {id:"V003",student:"Ibrahim Musa", visitor:"Dr. Musa Ibrahim",  relation:"Guardian",purpose:"Medical",       date:"2026-05-17",tin:"09:30",tout:"10:15"},
-];
-const HOSTEL_FEES = [
-  {student:"Amara Okonkwo",block:"Block A",room:"A-12",termFee:120000,paid:120000,balance:0,  status:"Paid"},
-  {student:"Kofi Mensah",  block:"Block B",room:"B-07",termFee:120000,paid:60000, balance:60000,status:"Part"},
-  {student:"Chidinma Eze", block:"Block A",room:"A-03",termFee:120000,paid:120000,balance:0,  status:"Paid"},
-];
-
 const Hostel = () => {
-  const [tab, setTab] = useState("overview");
-  const totalOcc = DORMS.reduce((a,d)=>a+d.occupied,0);
-  const totalCap = DORMS.reduce((a,d)=>a+d.capacity,0);
+  const [tab, setTab]       = useState("blocks");
+  const [terms, setTerms]   = useState([]);
+  const [termId, setTermId] = useState(null);
+  const [blocks, setBlocks] = useState([]);
+  const [selBlock, setSelBlock] = useState("");
+  const [rooms, setRooms]   = useState([]);
+  const [visitors, setVisitors] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [staff, setStaff]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [blockOpen, setBlockOpen] = useState(false);
+  const [roomOpen, setRoomOpen]   = useState(false);
+  const [visitorOpen, setVisitorOpen] = useState(false);
+  const [assignFor, setAssignFor] = useState(null);   // room obj
+  const [toast, setToast]   = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+
+  const loadBlocks   = () => getHostels().then(r => setBlocks(arrOf(r))).catch(() => setBlocks([]));
+  const loadRooms    = (h, t) => { if (!h) { setRooms([]); return Promise.resolve(); } return getRooms(h, t).then(r => setRooms(arrOf(r))).catch(() => setRooms([])); };
+  const loadVisitors = () => getVisitors().then(r => setVisitors(arrOf(r))).catch(() => setVisitors([]));
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const ts = arrOf(await getTerms().catch(() => []));
+        const tid = (ts.find(t => t.is_current) || ts[0])?.id ?? 2;
+        if (dead) return; setTerms(ts); setTermId(tid);
+        const bl = arrOf(await getHostels().catch(() => []));
+        if (dead) return; setBlocks(bl);
+        await loadVisitors();
+        setStudents(arrOf(await getStudents({ per_page: 200, sort: "class" }).catch(() => []), "students"));
+        setStaff(arrOf(await getStaff().catch(() => [])));
+        const first = bl[0]?.id ? String(bl[0].id) : "";
+        setSelBlock(first);
+        if (first) await loadRooms(first, tid);
+      } finally { if (!dead) setLoading(false); }
+    })();
+    return () => { dead = true; };
+  }, []);
+  useEffect(() => { if (selBlock && termId) loadRooms(selBlock, termId); }, [selBlock, termId]);
+
+  const totalCap = blocks.reduce((a,b)=>a+Number(b.capacity||0),0);
+  const totalOcc = blocks.reduce((a,b)=>a+Number(b.occupied||0),0);
+  const studOpts = [{value:"",label:"Select student…"},...students.map(s=>({value:String(s.id),label:`${[s.first_name,s.last_name].filter(Boolean).join(" ")} — ${s.class_name||s.student_id}`}))];
+  const matron = b => [b.first_name,b.last_name].filter(Boolean).join(" ") || "—";
+  const th = { padding:"10px 13px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" };
+
   return (
     <div className="fi">
-      <Tabs tabs={[{id:"overview",label:"🏠 Overview"},{id:"rooms",label:"🛏 Rooms"},{id:"visitors",label:"👥 Visitors"},{id:"hfees",label:"💳 Hostel Fees"}]} active={tab} onChange={setTab}/>
-      <div style={{ marginTop:16 }}>
-        {tab==="overview" && (
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <Tabs tabs={[{id:"blocks",label:"🏠 Blocks"},{id:"rooms",label:"🛏 Rooms"},{id:"visitors",label:"👥 Visitors"}]} active={tab} onChange={setTab}/>
+        {terms.length>0 && tab==="rooms" && <Sel value={termId?String(termId):""} onChange={v=>setTermId(Number(v))} options={terms.map(t=>({value:String(t.id),label:t.name+(t.is_current?" (current)":"")}))} style={{width:180}}/>}
+      </div>
+      <div style={{marginTop:16}}>
+        {loading ? <Card style={{textAlign:"center",color:C.textMuted,padding:"44px"}}>Loading hostel…</Card> : <>
+
+        {tab==="blocks" && (
           <div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:13, marginBottom:16 }}>
-              <StatCard label="Total Capacity" value={totalCap}                              color={C.sky}    icon="🏠"/>
-              <StatCard label="Occupied"       value={totalOcc}                              color={C.accent} icon="🛏"/>
-              <StatCard label="Vacant Beds"    value={totalCap-totalOcc}                    color={C.amber}  icon="🔓"/>
-              <StatCard label="Occupancy"      value={Math.round(totalOcc/totalCap*100)+"%"} color={C.purple} icon="📊"/>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:11,flex:1,maxWidth:560}}>
+                <StatCard label="Capacity" value={totalCap} color={C.sky} icon="🏠"/>
+                <StatCard label="Occupied" value={totalOcc} color={C.accent} icon="🛏"/>
+                <StatCard label="Vacant" value={Math.max(0,totalCap-totalOcc)} color={C.amber} icon="🔓"/>
+                <StatCard label="Occupancy" value={totalCap?Math.round(100*totalOcc/totalCap)+"%":"—"} color={C.purple} icon="📊"/>
+              </div>
+              <Btn variant="primary" onClick={()=>setBlockOpen(true)}>+ Add Block</Btn>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:13 }}>
-              {DORMS.map(d => {
-                const pct = Math.round(d.occupied/d.capacity*100);
-                return (
-                  <Card key={d.id}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:11 }}>
-                      <div><div style={{ fontSize:14, fontWeight:700 }}>{d.name}</div><div style={{ fontSize:11, color:C.textMuted }}>Managed by {d.matron}</div></div>
+            {blocks.length===0 ? (
+              <Card style={{textAlign:"center",padding:"48px 16px"}}><div style={{fontSize:34,marginBottom:10}}>🏠</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No hostel blocks yet</div><div style={{fontSize:13,color:C.textMid}}>Add a block to start managing rooms and allocations.</div></Card>
+            ) : (
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:13}}>
+                {blocks.map(b=>{ const pct=b.capacity?Math.round(100*Number(b.occupied||0)/Number(b.capacity)):0; return (
+                  <Card key={b.id}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:11}}>
+                      <div><div style={{fontSize:14,fontWeight:700}}>{b.name}</div><div style={{fontSize:11,color:C.textMuted}}>Matron: {matron(b)} · {b.gender}</div></div>
                       <Badge color={pct>90?"amber":"green"}>{pct}% Full</Badge>
                     </div>
-                    <div style={{ display:"flex", gap:14, marginBottom:11 }}>
-                      {[["Capacity",d.capacity],["Occupied",d.occupied],["Vacant",d.capacity-d.occupied],["Rooms",d.rooms]].map(([l,v]) => (
-                        <div key={l} style={{ textAlign:"center" }}><div style={{ fontSize:17, fontWeight:700 }}>{v}</div><div style={{ fontSize:9, color:C.textMuted }}>{l}</div></div>
+                    <div style={{display:"flex",gap:16,marginBottom:11}}>
+                      {[["Capacity",b.capacity||0],["Occupied",b.occupied||0],["Rooms",b.room_count||0]].map(([l,v])=>(
+                        <div key={l} style={{textAlign:"center"}}><div style={{fontSize:17,fontWeight:700}}>{v}</div><div style={{fontSize:9,color:C.textMuted}}>{l}</div></div>
                       ))}
                     </div>
-                    <div style={{ height:5, borderRadius:99, background:C.border }}><div style={{ height:5, borderRadius:99, background:pct>90?C.amber:C.accent, width:pct+"%" }}/></div>
+                    <div style={{height:5,borderRadius:99,background:C.border}}><div style={{height:5,borderRadius:99,background:pct>90?C.amber:C.accent,width:pct+"%"}}/></div>
                   </Card>
-                );
-              })}
-            </div>
+                );})}
+              </div>
+            )}
           </div>
         )}
+
         {tab==="rooms" && (
           <div>
-            <div style={{ display:"flex", gap:9, marginBottom:13 }}>
-              <Sel label="" value="DA" onChange={()=>{}} options={DORMS.map(d=>({value:d.id,label:d.name}))} style={{ width:180 }}/>
-              <Btn variant="secondary" size="sm">+ Assign Student</Btn>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
-              {Array.from({length:8},(_,i) => {
-                const roomStudents = STUDENTS.filter((_2,si) => si%8===i);
-                return (
-                  <Card key={i} style={{ padding:"13px 14px" }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:9 }}>
-                      <span style={{ fontSize:12, fontWeight:700 }}>Room A-{String(i+1).padStart(2,"0")}</span>
-                      <Badge color={roomStudents.length>=4?"amber":roomStudents.length>0?"green":"gray"} size="sm">{roomStudents.length}/4</Badge>
-                    </div>
-                    {roomStudents.map(s => (
-                      <div key={s.id} style={{ display:"flex", alignItems:"center", gap:6, marginBottom:5 }}>
-                        <Avatar initials={s.avatar} size={20} color={C.accent}/>
-                        <span style={{ fontSize:11, fontWeight:500 }}>{s.name.split(" ")[0]}</span>
+            {blocks.length===0 ? (
+              <Card style={{textAlign:"center",padding:"48px 16px"}}><div style={{fontSize:34,marginBottom:10}}>🛏</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>Add a block first</div><div style={{fontSize:13,color:C.textMid}}>Rooms belong to a hostel block.</div></Card>
+            ) : (<>
+              <div style={{display:"flex",gap:9,marginBottom:13,alignItems:"center"}}>
+                <Sel value={selBlock} onChange={setSelBlock} options={blocks.map(b=>({value:String(b.id),label:b.name}))} style={{width:200}}/>
+                <Btn variant="secondary" size="sm" onClick={()=>setRoomOpen(true)}>+ Add Room</Btn>
+              </div>
+              {rooms.length===0 ? <Card style={{textAlign:"center",padding:"40px",color:C.textMuted,fontSize:13}}>No rooms in this block yet.</Card> : (
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+                  {rooms.map(r=>{ const occ=Number(r.occupied||0),cap=Number(r.capacity||4); return (
+                    <Card key={r.id} style={{padding:"13px 14px"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:9}}>
+                        <span style={{fontSize:12,fontWeight:700}}>Room {r.room_no}</span>
+                        <Badge color={occ>=cap?"amber":occ>0?"green":"gray"} size="sm">{occ}/{cap}</Badge>
                       </div>
-                    ))}
-                    {roomStudents.length<4 && <div style={{ fontSize:10, color:C.textMuted, fontStyle:"italic" }}>{4-roomStudents.length} bed(s) vacant</div>}
-                  </Card>
-                );
-              })}
-            </div>
+                      {(r.students||[]).map(st=>(
+                        <div key={st.id} style={{display:"flex",alignItems:"center",gap:6,marginBottom:5}}>
+                          <Avatar initials={((st.first_name?.[0]||"")+(st.last_name?.[0]||"")).toUpperCase()} size={20} color={C.accent}/>
+                          <span style={{fontSize:11,fontWeight:500}}>{st.first_name} {st.last_name?.[0]||""}</span>
+                        </div>
+                      ))}
+                      {occ<cap && <Btn size="sm" variant="ghost" onClick={()=>setAssignFor(r)} style={{marginTop:4,padding:"3px 8px"}}>+ Assign</Btn>}
+                    </Card>
+                  );})}
+                </div>
+              )}
+            </>)}
           </div>
         )}
+
         {tab==="visitors" && (
           <div>
-            <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:13 }}>
-              <Btn variant="primary" size="sm">+ Log Visitor</Btn>
-            </div>
-            <Card style={{ padding:0 }}>
-              <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                <thead><tr style={{ background:"#F8FAFC" }}>{["Student","Visitor","Relation","Purpose","Date","Time In","Time Out"].map(h=><th key={h} style={{ padding:"10px 13px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:13}}><Btn variant="primary" size="sm" onClick={()=>setVisitorOpen(true)}>+ Log Visitor</Btn></div>
+            {visitors.length===0 ? <Card style={{textAlign:"center",padding:"48px 16px"}}><div style={{fontSize:34,marginBottom:10}}>👥</div><div style={{fontSize:13,color:C.textMid}}>No visitors logged yet.</div></Card> : (
+            <Card style={{padding:0,overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
+                <thead><tr style={{background:"#F8FAFC"}}>{["Student","Visitor","Relation","Purpose","Time In","Time Out"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {VISITORS.map(v => (
-                    <tr key={v.id} style={{ borderBottom:`1px solid ${C.border}` }} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{ padding:"10px 13px", fontSize:12, fontWeight:600 }}>{v.student}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12 }}>{v.visitor}</td>
-                      <td style={{ padding:"10px 13px" }}><Badge color="blue" size="sm">{v.relation}</Badge></td>
-                      <td style={{ padding:"10px 13px", fontSize:12, color:C.textMid }}>{v.purpose}</td>
-                      <td style={{ padding:"10px 13px", fontSize:11, color:C.textMuted }}>{v.date}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12 }}>{v.tin}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12, color:C.textMuted }}>{v.tout}</td>
+                  {visitors.map(v=>(
+                    <tr key={v.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                      <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{v.first_name} {v.last_name}</td>
+                      <td style={{padding:"10px 13px",fontSize:12}}>{v.visitor_name}</td>
+                      <td style={{padding:"10px 13px"}}><Badge color="blue" size="sm">{v.relation||"—"}</Badge></td>
+                      <td style={{padding:"10px 13px",fontSize:12,color:C.textMid}}>{v.purpose||"—"}</td>
+                      <td style={{padding:"10px 13px",fontSize:11,color:C.textMuted}}>{v.time_in?new Date(v.time_in).toLocaleString("en-GB"):"—"}</td>
+                      <td style={{padding:"10px 13px",fontSize:11,color:C.textMuted}}>{v.time_out?new Date(v.time_out).toLocaleString("en-GB"):"—"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </Card>
+            )}
           </div>
         )}
-        {tab==="hfees" && (
-          <div>
-            <div style={{ display:"flex", justifyContent:"flex-end", gap:9, marginBottom:13 }}>
-              <Btn variant="secondary" size="sm">+ Record Payment</Btn>
-              <Btn variant="primary"   size="sm">Generate Invoices</Btn>
-            </div>
-            <Card style={{ padding:0 }}>
-              <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                <thead><tr style={{ background:"#F8FAFC" }}>{["Student","Block","Room","Term Fee","Paid","Balance","Status"].map(h=><th key={h} style={{ padding:"10px 13px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" }}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {HOSTEL_FEES.map((f,i) => (
-                    <tr key={i} style={{ borderBottom:`1px solid ${C.border}` }} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <td style={{ padding:"10px 13px", fontSize:12, fontWeight:600 }}>{f.student}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12 }}>{f.block}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12 }}>{f.room}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12, fontFamily:"monospace" }}>₦{f.termFee.toLocaleString()}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12, fontFamily:"monospace", color:C.accentDark }}>₦{f.paid.toLocaleString()}</td>
-                      <td style={{ padding:"10px 13px", fontSize:12, fontFamily:"monospace", color:f.balance>0?C.coral:C.textMuted }}>₦{f.balance.toLocaleString()}</td>
-                      <td style={{ padding:"10px 13px" }}><Badge color={f.status==="Paid"?"green":f.status==="Part"?"amber":"red"} size="sm">{f.status}</Badge></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Card>
-          </div>
-        )}
+        </>}
       </div>
+
+      {blockOpen && <HostelBlockModal staff={staff} onClose={()=>setBlockOpen(false)} onDone={()=>{setBlockOpen(false); loadBlocks();}} flash={flash}/>}
+      {roomOpen && <RoomModal hostelId={selBlock} onClose={()=>setRoomOpen(false)} onDone={()=>{setRoomOpen(false); loadRooms(selBlock,termId); loadBlocks();}} flash={flash}/>}
+      {visitorOpen && <LogVisitorModal studOpts={studOpts} onClose={()=>setVisitorOpen(false)} onDone={()=>{setVisitorOpen(false); loadVisitors();}} flash={flash}/>}
+      {assignFor && <AssignRoomModal room={assignFor} termId={termId} studOpts={studOpts} onClose={()=>setAssignFor(null)} onDone={()=>{setAssignFor(null); loadRooms(selBlock,termId); loadBlocks();}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600}}>{toast}</div>}
     </div>
+  );
+};
+
+const HostelBlockModal = ({ staff, onClose, onDone, flash }) => {
+  const [f, setF] = useState({ name:"", gender:"mixed", capacity:"", matron_id:"" });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!f.name.trim()) return flash("Block name is required.");
+    setSaving(true);
+    try { await createHostel({ name:f.name, gender:f.gender, capacity:parseInt(f.capacity)||0, matron_id:f.matron_id||null }); flash("Block created."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not create block."); setSaving(false); }
+  };
+  return (
+    <Modal title="Add Hostel Block" onClose={onClose} width={460}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Input label="Block name" value={f.name} onChange={v=>setF(s=>({...s,name:v}))} placeholder="e.g. Block A (Boys)"/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+          <Sel label="Gender" value={f.gender} onChange={v=>setF(s=>({...s,gender:v}))} options={[{value:"mixed",label:"Mixed"},{value:"male",label:"Boys"},{value:"female",label:"Girls"}]}/>
+          <Input label="Capacity" type="number" value={f.capacity} onChange={v=>setF(s=>({...s,capacity:v}))}/>
+        </div>
+        <Sel label="Matron (optional)" value={f.matron_id} onChange={v=>setF(s=>({...s,matron_id:v}))}
+             options={[{value:"",label:"None"},...staff.map(st=>({value:String(st.user_id),label:`${st.first_name} ${st.last_name}`}))]}/>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Create Block"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
+
+const RoomModal = ({ hostelId, onClose, onDone, flash }) => {
+  const [f, setF] = useState({ room_no:"", capacity:"4" });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!f.room_no.trim()) return flash("Room number is required.");
+    setSaving(true);
+    try { await createRoom({ hostel_id:Number(hostelId), room_no:f.room_no, capacity:parseInt(f.capacity)||4 }); flash("Room added."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not add room."); setSaving(false); }
+  };
+  return (
+    <Modal title="Add Room" onClose={onClose} width={400}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Input label="Room number" value={f.room_no} onChange={v=>setF(s=>({...s,room_no:v}))} placeholder="e.g. A-12"/>
+        <Input label="Capacity (beds)" type="number" value={f.capacity} onChange={v=>setF(s=>({...s,capacity:v}))}/>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Add Room"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
+
+const LogVisitorModal = ({ studOpts, onClose, onDone, flash }) => {
+  const [f, setF] = useState({ student_id:"", visitor_name:"", relation:"", purpose:"" });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!f.student_id || !f.visitor_name.trim()) return flash("Student and visitor name are required.");
+    setSaving(true);
+    try { await logVisitor({ student_id:Number(f.student_id), visitor_name:f.visitor_name, relation:f.relation, purpose:f.purpose }); flash("Visitor logged."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not log visitor."); setSaving(false); }
+  };
+  return (
+    <Modal title="Log Visitor" onClose={onClose} width={460}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Sel label="Student" value={f.student_id} onChange={v=>setF(s=>({...s,student_id:v}))} options={studOpts}/>
+        <Input label="Visitor name" value={f.visitor_name} onChange={v=>setF(s=>({...s,visitor_name:v}))}/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+          <Input label="Relation" value={f.relation} onChange={v=>setF(s=>({...s,relation:v}))} placeholder="Mother, Guardian…"/>
+          <Input label="Purpose" value={f.purpose} onChange={v=>setF(s=>({...s,purpose:v}))} placeholder="Welfare visit…"/>
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Log Visitor"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
+
+const AssignRoomModal = ({ room, termId, studOpts, onClose, onDone, flash }) => {
+  const [sid, setSid] = useState("");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!sid) return flash("Pick a student.");
+    setSaving(true);
+    try { await allocateRoom({ room_id:room.id, student_id:Number(sid), term_id:termId }); flash("Student allocated."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not allocate."); setSaving(false); }
+  };
+  return (
+    <Modal title={`Assign to Room ${room.room_no}`} onClose={onClose} width={440}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Sel label="Student" value={sid} onChange={setSid} options={studOpts}/>
+        <div style={{fontSize:11,color:C.textMuted}}>A student can occupy one room per term; re-assigning moves them.</div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Allocate"}</Btn></div>
+      </div>
+    </Modal>
   );
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INVENTORY
 // ═══════════════════════════════════════════════════════════════════════════════
-const INV_ITEMS = [
-  {id:"I001",name:"Exercise Books (A4)", cat:"stationery",unit:"Ream",qty:340,min:100,cost:1200, loc:"Store Room A",  status:"ok"},
-  {id:"I002",name:"Biro Pens (Blue)",    cat:"stationery",unit:"Box", qty:28, min:30, cost:800,  loc:"Store Room A",  status:"low"},
-  {id:"I003",name:"Manila Cardboard",    cat:"stationery",unit:"Pack",qty:6,  min:15, cost:2500, loc:"Store Room A",  status:"critical"},
-  {id:"I015",name:"Mattress (Single)",   cat:"hostel",    unit:"Pcs", qty:180,min:20, cost:22000,loc:"Hostel Store",  status:"ok"},
-  {id:"I016",name:"Bedsheet (White)",    cat:"hostel",    unit:"Pcs", qty:95, min:50, cost:3800, loc:"Hostel Store",  status:"ok"},
-  {id:"I017",name:"Pillow",              cat:"hostel",    unit:"Pcs", qty:42, min:40, cost:2800, loc:"Hostel Store",  status:"low"},
-  {id:"I018",name:"Mosquito Net",        cat:"hostel",    unit:"Pcs", qty:8,  min:30, cost:1500, loc:"Hostel Store",  status:"critical"},
-  {id:"I023",name:"Rice (50kg bag)",     cat:"kitchen",   unit:"Bag", qty:38, min:20, cost:75000,loc:"Kitchen Store", status:"ok"},
-  {id:"I024",name:"Cooking Gas (12kg)",  cat:"kitchen",   unit:"Cyl",qty:5,   min:6,  cost:18000,loc:"Kitchen",       status:"low"},
-  {id:"I027",name:"Paracetamol (500mg)", cat:"medical",   unit:"Pack",qty:45, min:20, cost:850,  loc:"Sick Bay",      status:"ok"},
-  {id:"I029",name:"Disposable Gloves",   cat:"medical",   unit:"Box", qty:3,  min:10, cost:3500, loc:"Sick Bay",      status:"critical"},
-  {id:"I031",name:"Electrical Bulb 20W", cat:"maintenance",unit:"Box",qty:6,  min:10, cost:8500, loc:"Maintenance",   status:"low"},
-];
-const INV_CATS = [{id:"all",label:"All",icon:"📦"},{id:"stationery",label:"Stationery",icon:"✏️"},{id:"hostel",label:"Hostel",icon:"🏠"},{id:"kitchen",label:"Kitchen",icon:"🍳"},{id:"medical",label:"Medical",icon:"💊"},{id:"maintenance",label:"Maintenance",icon:"🔧"}];
+const INV_CATS = [{id:"all",label:"All",icon:"📦"},{id:"stationery",label:"Stationery",icon:"✏️"},{id:"hostel",label:"Hostel",icon:"🏠"},{id:"kitchen",label:"Kitchen",icon:"🍳"},{id:"medical",label:"Medical",icon:"💊"},{id:"maintenance",label:"Maintenance",icon:"🔧"},{id:"other",label:"Other",icon:"📦"}];
 
 const Inventory = () => {
-  const [items,     setItems]     = useState(INV_ITEMS);
-  const [cat,       setCat]       = useState("all");
-  const [search,    setSearch]    = useState("");
-  const [modal,     setModal]     = useState(null);
-  const [toast,     setToast]     = useState(null);
+  const [items, setItems]   = useState([]);
+  const [cat, setCat]       = useState("all");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal]   = useState(null);   // {type:'issue'|'restock'|'add', item?}
+  const [toast, setToast]   = useState(null);
+  const flash = m => { setToast(m); setTimeout(() => setToast(null), 2800); };
 
-  const showToast = m => { setToast(m); setTimeout(() => setToast(null), 2600); };
-  const filtered  = items.filter(i => (cat==="all"||i.cat===cat) && i.name.toLowerCase().includes(search.toLowerCase()));
+  const load = () => { setLoading(true); return getInventory().then(r => setItems(arrOf(r))).catch(() => setItems([])).finally(() => setLoading(false)); };
+  useEffect(() => { load(); }, []);
+
+  const filtered = items.filter(i => (cat==="all"||i.category===cat) && (i.name||"").toLowerCase().includes(search.toLowerCase()));
   const statColor = s => s==="ok"?"green":s==="low"?"amber":"red";
   const statLabel = s => s==="ok"?"In Stock":s==="low"?"Low Stock":"Critical";
-
   const SBar = ({ qty, min }) => {
-    const pct = Math.min(100, Math.round(qty/Math.max(qty,min*2)*100));
+    const pct = Math.min(100, Math.round(qty/Math.max(qty,min*2||1)*100));
     const col  = qty<=min*.5?C.coral:qty<=min?C.amber:C.accent;
-    return <div style={{ height:4, borderRadius:99, background:C.border, overflow:"hidden" }}><div style={{ height:4, borderRadius:99, background:col, width:pct+"%" }}/></div>;
+    return <div style={{height:4,borderRadius:99,background:C.border,overflow:"hidden"}}><div style={{height:4,borderRadius:99,background:col,width:pct+"%"}}/></div>;
   };
 
-  const issueItem = (item,qty,to) => { setItems(p=>p.map(i=>i.id===item.id?{...i,qty:Math.max(0,i.qty-qty),status:(i.qty-qty)<=i.min*.5?"critical":(i.qty-qty)<=i.min?"low":"ok"}:i)); showToast(`✅ Issued ${qty} ${item.unit} of "${item.name}" to ${to}`); setModal(null); };
-  const restock   = (item,qty)   => { setItems(p=>p.map(i=>i.id===item.id?{...i,qty:i.qty+qty,status:(i.qty+qty)<=i.min*.5?"critical":(i.qty+qty)<=i.min?"low":"ok"}:i)); showToast(`📦 Restocked ${qty} ${item.unit} of "${item.name}"`); setModal(null); };
+  const doIssue = async (item, qty, to) => {
+    try { await apiIssueItem({ item_id:item.id, qty, issued_to:to }); flash(`✅ Issued ${qty} ${item.unit} of "${item.name}"`); setModal(null); load(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not issue item."); }
+  };
+  const doRestock = async (item, qty) => {
+    try { await apiRestockItem({ item_id:item.id, qty }); flash(`📦 Restocked ${qty} ${item.unit} of "${item.name}"`); setModal(null); load(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not restock."); }
+  };
 
   const IssueForm = ({ item }) => {
     const [qty,setQty]=useState("1"); const [to,setTo]=useState("");
     return (<div style={{display:"flex",flexDirection:"column",gap:12}}>
-      <Card style={{background:"#F8FAFC",padding:"11px 13px"}}><div style={{fontSize:11,color:C.textMuted}}>Issuing</div><div style={{fontSize:14,fontWeight:700}}>{item.name}</div><div style={{fontSize:11,color:C.textMid,marginTop:3}}>Available: <strong style={{color:item.qty<=item.min?C.coral:C.accentDark}}>{item.qty} {item.unit}</strong></div></Card>
+      <Card style={{background:"#F8FAFC",padding:"11px 13px"}}><div style={{fontSize:11,color:C.textMuted}}>Issuing</div><div style={{fontSize:14,fontWeight:700}}>{item.name}</div><div style={{fontSize:11,color:C.textMid,marginTop:3}}>Available: <strong style={{color:item.qty<=item.min_qty?C.coral:C.accentDark}}>{item.qty} {item.unit}</strong></div></Card>
       <Input label="Quantity" value={qty} onChange={setQty} type="number"/>
       <Input label="Issued To" value={to} onChange={setTo} placeholder="Class, dept, student name…"/>
-      <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setModal(null)}>Cancel</Btn><Btn variant="primary" onClick={()=>issueItem(item,parseInt(qty)||1,to)} disabled={!to||!qty}>✅ Confirm</Btn></div>
+      <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setModal(null)}>Cancel</Btn><Btn variant="primary" onClick={()=>doIssue(item,parseInt(qty)||1,to)} disabled={!to||!qty}>✅ Confirm</Btn></div>
     </div>);
   };
   const RestockForm = ({ item }) => {
     const [qty,setQty]=useState("0");
     return (<div style={{display:"flex",flexDirection:"column",gap:12}}>
-      <Card style={{background:"#F8FAFC",padding:"11px 13px"}}><div style={{fontSize:11,color:C.textMuted}}>Restocking</div><div style={{fontSize:14,fontWeight:700}}>{item.name}</div><div style={{fontSize:11,color:C.textMid,marginTop:3}}>Current: <strong>{item.qty}</strong> · Min: <strong>{item.min}</strong></div></Card>
+      <Card style={{background:"#F8FAFC",padding:"11px 13px"}}><div style={{fontSize:11,color:C.textMuted}}>Restocking</div><div style={{fontSize:14,fontWeight:700}}>{item.name}</div><div style={{fontSize:11,color:C.textMid,marginTop:3}}>Current: <strong>{item.qty}</strong> · Min: <strong>{item.min_qty}</strong></div></Card>
       <Input label="Quantity Received" value={qty} onChange={setQty} type="number"/>
       <div style={{padding:"9px 12px",borderRadius:9,background:C.accentLight,fontSize:12,color:C.accentDark}}>New total: <strong>{item.qty+(parseInt(qty)||0)} {item.unit}</strong></div>
-      <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setModal(null)}>Cancel</Btn><Btn variant="primary" onClick={()=>restock(item,parseInt(qty)||0)} disabled={!qty||parseInt(qty)<=0}>📦 Confirm</Btn></div>
+      <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setModal(null)}>Cancel</Btn><Btn variant="primary" onClick={()=>doRestock(item,parseInt(qty)||0)} disabled={!qty||parseInt(qty)<=0}>📦 Confirm</Btn></div>
+    </div>);
+  };
+  const AddForm = () => {
+    const [f,setF]=useState({name:"",category:"stationery",unit:"Pcs",qty:"0",min_qty:"0",unit_cost:"0",location:""});
+    const [saving,setSaving]=useState(false);
+    const save = async () => {
+      if (!f.name.trim()) return flash("Item name is required.");
+      setSaving(true);
+      try { await createItem({ ...f, qty:parseInt(f.qty)||0, min_qty:parseInt(f.min_qty)||0, unit_cost:parseFloat(f.unit_cost)||0 }); flash("Item added."); setModal(null); load(); }
+      catch (e) { flash(e?.message || e?.data?.message || "Could not add item."); setSaving(false); }
+    };
+    return (<div style={{display:"flex",flexDirection:"column",gap:11}}>
+      <Input label="Item name" value={f.name} onChange={v=>setF(s=>({...s,name:v}))}/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+        <Sel label="Category" value={f.category} onChange={v=>setF(s=>({...s,category:v}))} options={INV_CATS.filter(c=>c.id!=="all").map(c=>({value:c.id,label:c.label}))}/>
+        <Input label="Unit" value={f.unit} onChange={v=>setF(s=>({...s,unit:v}))} placeholder="Pcs, Box, Ream…"/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:11}}>
+        <Input label="Quantity" type="number" value={f.qty} onChange={v=>setF(s=>({...s,qty:v}))}/>
+        <Input label="Min Qty" type="number" value={f.min_qty} onChange={v=>setF(s=>({...s,min_qty:v}))}/>
+        <Input label="Unit Cost" type="number" value={f.unit_cost} onChange={v=>setF(s=>({...s,unit_cost:v}))}/>
+      </div>
+      <Input label="Location" value={f.location} onChange={v=>setF(s=>({...s,location:v}))} placeholder="Store Room A…"/>
+      <div style={{display:"flex",gap:9,justifyContent:"flex-end",marginTop:4}}><Btn variant="secondary" onClick={()=>setModal(null)}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Add Item"}</Btn></div>
     </div>);
   };
 
+  const stockValue = items.reduce((a,i)=>a+(Number(i.qty)*Number(i.unit_cost||0)),0);
   return (
     <div className="fi">
-      {toast && <div className="no-print" style={{ position:"fixed", bottom:26, right:26, zIndex:2000, background:C.navy, color:"#fff", padding:"11px 18px", borderRadius:11, fontSize:12, fontWeight:600, boxShadow:"0 8px 28px rgba(0,0,0,.2)", borderLeft:`4px solid ${C.accent}` }}>{toast}</div>}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:16 }}>
-        <StatCard label="Total Items"    value={items.length}                                                           color={C.sky}   icon="📦"/>
-        <StatCard label="Stock Value"    value={"₦"+(items.reduce((a,i)=>a+(i.qty*i.cost),0)/1000).toFixed(0)+"K"}    color={C.accent} icon="💰"/>
-        <StatCard label="Critical Items" value={items.filter(i=>i.status==="critical").length}                          color={C.coral} icon="🚨"/>
-        <StatCard label="Low Stock"      value={items.filter(i=>i.status==="low").length}                               color={C.amber} icon="⚠️"/>
+      {toast && <div className="no-print" style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600,borderLeft:`4px solid ${C.accent}`}}>{toast}</div>}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:16}}>
+        <StatCard label="Total Items" value={items.length} color={C.sky} icon="📦"/>
+        <StatCard label="Stock Value" value={fmtNaira(stockValue)} color={C.accent} icon="💰"/>
+        <StatCard label="Critical Items" value={items.filter(i=>i.status==="critical").length} color={C.coral} icon="🚨"/>
+        <StatCard label="Low Stock" value={items.filter(i=>i.status==="low").length} color={C.amber} icon="⚠️"/>
       </div>
-      <div style={{ display:"flex", gap:10, marginBottom:13, flexWrap:"wrap", alignItems:"center" }}>
-        <Input value={search} onChange={setSearch} placeholder="🔍 Search inventory…" style={{ width:210 }}/>
-        <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-          {INV_CATS.map(c => (
-            <button key={c.id} onClick={() => setCat(c.id)}
-              style={{ padding:"4px 11px", borderRadius:99, border:`1.5px solid ${cat===c.id?C.accent:C.border}`, background:cat===c.id?C.accentLight:"transparent", fontSize:11, fontWeight:cat===c.id?700:500, cursor:"pointer", color:cat===c.id?C.accentDark:C.textMid, transition:"all .15s" }}>
-              {c.icon} {c.label}
-            </button>
+      <div style={{display:"flex",gap:10,marginBottom:13,flexWrap:"wrap",alignItems:"center"}}>
+        <Input value={search} onChange={setSearch} placeholder="🔍 Search inventory…" style={{width:210}}/>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+          {INV_CATS.map(c=>(
+            <button key={c.id} onClick={()=>setCat(c.id)} style={{padding:"4px 11px",borderRadius:99,border:`1.5px solid ${cat===c.id?C.accent:C.border}`,background:cat===c.id?C.accentLight:"transparent",fontSize:11,fontWeight:cat===c.id?700:500,cursor:"pointer",color:cat===c.id?C.accentDark:C.textMid}}>{c.icon} {c.label}</button>
           ))}
         </div>
-        <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
-          <Btn variant="secondary" size="sm">📥 Import</Btn>
-          <Btn variant="primary"   size="sm">+ Add Item</Btn>
-        </div>
+        <div style={{marginLeft:"auto"}}><Btn variant="primary" size="sm" onClick={()=>setModal({type:"add"})}>+ Add Item</Btn></div>
       </div>
-      <Card style={{ padding:0, overflowX:"auto" }}>
-        <table style={{ width:"100%", borderCollapse:"collapse", minWidth:680 }}>
-          <thead><tr style={{ background:"#F8FAFC", borderBottom:`1px solid ${C.border}` }}>{["Item","Category","Location","Stock Level","Min Qty","Unit Cost","Status","Actions"].map(h=><th key={h} style={{ padding:"10px 12px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", letterSpacing:".4px", whiteSpace:"nowrap" }}>{h}</th>)}</tr></thead>
+      <Card style={{padding:0,overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:680}}>
+          <thead><tr style={{background:"#F8FAFC",borderBottom:`1px solid ${C.border}`}}>{["Item","Category","Location","Stock","Min","Unit Cost","Status","Actions"].map(h=><th key={h} style={{padding:"10px 12px",textAlign:"left",fontSize:10,fontWeight:700,color:C.textMuted,textTransform:"uppercase",letterSpacing:".4px",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
           <tbody>
-            {filtered.length===0 && <tr><td colSpan={8} style={{ padding:"36px", textAlign:"center", color:C.textMuted, fontSize:13 }}>No items match your filter.</td></tr>}
-            {filtered.map(item => {
-              const catObj = INV_CATS.find(c => c.id===item.cat);
-              return (
-                <tr key={item.id} style={{ borderBottom:`1px solid ${C.border}`, transition:"background .1s" }} onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                  <td style={{ padding:"9px 12px" }}><div style={{ fontSize:12, fontWeight:700 }}>{item.name}</div><div style={{ fontSize:9, color:C.textMuted, fontFamily:"monospace" }}>{item.id}</div></td>
-                  <td style={{ padding:"9px 12px", fontSize:12 }}>{catObj?.icon} {catObj?.label}</td>
-                  <td style={{ padding:"9px 12px", fontSize:11, color:C.textMid }}>{item.loc}</td>
-                  <td style={{ padding:"9px 12px", minWidth:100 }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:item.status==="critical"?C.coral:item.status==="low"?C.amber:C.accentDark }}>{item.qty} <span style={{ fontSize:10, color:C.textMuted, fontWeight:400 }}>{item.unit}</span></div>
-                    <div style={{ marginTop:3, width:76 }}><SBar qty={item.qty} min={item.min}/></div>
-                  </td>
-                  <td style={{ padding:"9px 12px", fontSize:11, color:C.textMid }}>{item.min}</td>
-                  <td style={{ padding:"9px 12px", fontSize:11, fontFamily:"monospace", whiteSpace:"nowrap" }}>₦{item.cost.toLocaleString()}</td>
-                  <td style={{ padding:"9px 12px" }}><Badge color={statColor(item.status)} size="sm">{statLabel(item.status)}</Badge></td>
-                  <td style={{ padding:"9px 12px" }}>
-                    <div style={{ display:"flex", gap:5 }}>
-                      <Btn size="sm" variant="secondary" onClick={() => setModal({type:"issue",  item})}>Issue</Btn>
-                      <Btn size="sm" variant="primary"   onClick={() => setModal({type:"restock",item})}>+Stock</Btn>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+            {loading && <tr><td colSpan={8} style={{padding:"36px",textAlign:"center",color:C.textMuted,fontSize:13}}>Loading…</td></tr>}
+            {!loading && filtered.length===0 && <tr><td colSpan={8} style={{padding:"44px",textAlign:"center",color:C.textMuted,fontSize:13}}>{items.length===0?"No inventory items yet. Click “Add Item” to start.":"No items match your filter."}</td></tr>}
+            {!loading && filtered.map(item=>{ const catObj=INV_CATS.find(c=>c.id===item.category); return (
+              <tr key={item.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                <td style={{padding:"9px 12px"}}><div style={{fontSize:12,fontWeight:700}}>{item.name}</div><div style={{fontSize:9,color:C.textMuted,fontFamily:"monospace"}}>{item.item_code}</div></td>
+                <td style={{padding:"9px 12px",fontSize:12}}>{catObj?.icon} {catObj?.label||item.category}</td>
+                <td style={{padding:"9px 12px",fontSize:11,color:C.textMid}}>{item.location||"—"}</td>
+                <td style={{padding:"9px 12px",minWidth:100}}>
+                  <div style={{fontSize:13,fontWeight:700,color:item.status==="critical"?C.coral:item.status==="low"?C.amber:C.accentDark}}>{item.qty} <span style={{fontSize:10,color:C.textMuted,fontWeight:400}}>{item.unit}</span></div>
+                  <div style={{marginTop:3,width:76}}><SBar qty={Number(item.qty)} min={Number(item.min_qty)}/></div>
+                </td>
+                <td style={{padding:"9px 12px",fontSize:11,color:C.textMid}}>{item.min_qty}</td>
+                <td style={{padding:"9px 12px",fontSize:11,fontFamily:"monospace",whiteSpace:"nowrap"}}>{fmtNaira(item.unit_cost)}</td>
+                <td style={{padding:"9px 12px"}}><Badge color={statColor(item.status)} size="sm">{statLabel(item.status)}</Badge></td>
+                <td style={{padding:"9px 12px"}}>
+                  <div style={{display:"flex",gap:5}}>
+                    <Btn size="sm" variant="secondary" onClick={()=>setModal({type:"issue",item})}>Issue</Btn>
+                    <Btn size="sm" variant="primary" onClick={()=>setModal({type:"restock",item})}>+Stock</Btn>
+                  </div>
+                </td>
+              </tr>
+            );})}
           </tbody>
         </table>
-        <div style={{ padding:"8px 13px", borderTop:`1px solid ${C.border}`, fontSize:11, color:C.textMuted }}>Showing {filtered.length} of {items.length} items · Value: ₦{filtered.reduce((a,i)=>a+(i.qty*i.cost),0).toLocaleString()}</div>
+        {!loading && items.length>0 && <div style={{padding:"8px 13px",borderTop:`1px solid ${C.border}`,fontSize:11,color:C.textMuted}}>Showing {filtered.length} of {items.length} items · Value: {fmtNaira(filtered.reduce((a,i)=>a+(Number(i.qty)*Number(i.unit_cost||0)),0))}</div>}
       </Card>
-      {modal?.type==="issue"   && <Modal title="Issue Item"   onClose={() => setModal(null)}><IssueForm   item={modal.item}/></Modal>}
-      {modal?.type==="restock" && <Modal title="Restock Item" onClose={() => setModal(null)}><RestockForm item={modal.item}/></Modal>}
+      {modal?.type==="issue"   && <Modal title="Issue Item"   onClose={()=>setModal(null)}><IssueForm   item={modal.item}/></Modal>}
+      {modal?.type==="restock" && <Modal title="Restock Item" onClose={()=>setModal(null)}><RestockForm item={modal.item}/></Modal>}
+      {modal?.type==="add"     && <Modal title="Add Inventory Item" onClose={()=>setModal(null)}><AddForm/></Modal>}
     </div>
   );
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REMAINING MODULES  — Messaging, Library, Staff, Settings
+// REMAINING MODULES  — Messaging, Library
 // ═══════════════════════════════════════════════════════════════════════════════
 const Messaging = () => {
-  const [msg, setMsg] = useState("");
-  const msgs = [
-    {from:"Mrs. Adeyemi",text:"Remind students about the Math test tomorrow.",   time:"10:32 AM",me:false},
-    {from:"You",         text:"Will do. Already posted on the notice board.",     time:"10:35 AM",me:true},
-    {from:"Mr. Osei",    text:"Can someone share the JSS 3 timetable changes?",  time:"11:02 AM",me:false},
-  ];
+  const [tab, setTab]   = useState("inbox");
+  const [data, setData] = useState({ sent:[], received:[] });
+  const [staff, setStaff] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [compose, setCompose] = useState(false);
+  const [toast, setToast] = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+
+  const load = () => getMessages().then(r => setData(r?.data || { sent:[], received:[] })).catch(() => setData({ sent:[], received:[] }));
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setLoading(true);
+      try { await load(); setStaff(arrOf(await getStaff().catch(() => []))); }
+      finally { if (!dead) setLoading(false); }
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  const list = tab==="inbox" ? (data.received||[]) : (data.sent||[]);
+  const who = m => tab==="inbox" ? `From ${[m.first_name,m.last_name].filter(Boolean).join(" ")}` : "You";
+
   return (
-    <div style={{ display:"grid", gridTemplateColumns:"240px 1fr", height:"calc(100vh - 140px)", border:`1px solid ${C.border}`, borderRadius:13, overflow:"hidden" }}>
-      <div style={{ background:C.surface, borderRight:`1px solid ${C.border}`, display:"flex", flexDirection:"column" }}>
-        <div style={{ padding:"12px 14px", borderBottom:`1px solid ${C.border}`, fontWeight:700, fontSize:12 }}>Conversations</div>
-        <div style={{ flex:1, overflowY:"auto" }}>
-          {["Staff Chat","JSS 3 Parents","Announcements",...STAFF.map(s=>s.name)].map((c,i) => (
-            <div key={c} style={{ padding:"10px 13px", cursor:"pointer", borderBottom:`1px solid ${C.border}`, background:i===0?C.accentLight:"transparent" }}
-              onMouseEnter={e=>{if(i!==0)e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={e=>{if(i!==0)e.currentTarget.style.background="transparent";}}>
-              <div style={{ display:"flex", justifyContent:"space-between" }}><span style={{ fontSize:12, fontWeight:i<3?700:500 }}>{c}</span><span style={{ fontSize:9, color:C.textMuted }}>11:02</span></div>
-              <div style={{ fontSize:10, color:C.textMuted, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>Last message preview…</div>
-            </div>
-          ))}
-        </div>
+    <div className="fi">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <Tabs tabs={[{id:"inbox",label:"📥 Inbox"},{id:"sent",label:"📤 Sent"}]} active={tab} onChange={setTab}/>
+        <Btn variant="primary" size="sm" onClick={()=>setCompose(true)}>✏️ Compose</Btn>
       </div>
-      <div style={{ display:"flex", flexDirection:"column", background:"#F8FAFC" }}>
-        <div style={{ padding:"12px 18px", background:C.surface, borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <div style={{ fontWeight:700, fontSize:13 }}>Staff Chat</div>
-          <Btn size="sm" variant="secondary">📢 Announce</Btn>
-        </div>
-        <div style={{ flex:1, overflowY:"auto", padding:"13px 16px", display:"flex", flexDirection:"column", gap:10 }}>
-          {msgs.map((m,i) => (
-            <div key={i} style={{ display:"flex", justifyContent:m.me?"flex-end":"flex-start" }}>
-              <div style={{ maxWidth:"66%" }}>
-                {!m.me && <div style={{ fontSize:10, fontWeight:600, color:C.accent, marginBottom:2 }}>{m.from}</div>}
-                <div style={{ padding:"9px 13px", borderRadius:m.me?"13px 13px 4px 13px":"13px 13px 13px 4px", background:m.me?C.navy:C.surface, color:m.me?"#fff":C.text, fontSize:12, border:m.me?"none":`1px solid ${C.border}` }}>{m.text}</div>
-                <div style={{ fontSize:9, color:C.textMuted, marginTop:2, textAlign:m.me?"right":"left" }}>{m.time}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div style={{ padding:"11px 16px", background:C.surface, borderTop:`1px solid ${C.border}`, display:"flex", gap:9 }}>
-          <input value={msg} onChange={e => setMsg(e.target.value)} placeholder="Type a message…"
-            style={{ flex:1, padding:"8px 12px", borderRadius:9, border:`1px solid ${C.border}`, fontSize:13, outline:"none", fontFamily:"Sora,sans-serif" }}
-            onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
-          <Btn variant="primary" onClick={() => setMsg("")}>Send →</Btn>
-        </div>
+      <div style={{marginTop:16}}>
+        {loading ? <Card style={{textAlign:"center",color:C.textMuted,padding:"44px"}}>Loading messages…</Card> :
+         list.length===0 ? <Card style={{textAlign:"center",padding:"52px 16px"}}><div style={{fontSize:34,marginBottom:10}}>💬</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>{tab==="inbox"?"Your inbox is empty":"No sent messages"}</div><div style={{fontSize:13,color:C.textMid}}>Use Compose to message staff. For parent/guardian broadcasts, use the Communications module.</div></Card> : (
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {list.map(m=>(
+              <Card key={m.id}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{fontSize:13,fontWeight:700}}>{m.subject||"(no subject)"}</div>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <Badge color={m.type==="announcement"?"amber":"blue"} size="sm">{m.type||"direct"}</Badge>
+                    {tab==="inbox" && Number(m.is_read)===0 && <Badge color="green" size="sm">New</Badge>}
+                  </div>
+                </div>
+                <div style={{fontSize:12.5,color:C.textMid,marginBottom:8,whiteSpace:"pre-wrap"}}>{m.body}</div>
+                <div style={{fontSize:11,color:C.textMuted}}>{who(m)} · {m.created_at?new Date(m.created_at).toLocaleString("en-GB"):""}</div>
+              </Card>
+            ))}
+          </div>
+        )}
       </div>
+      {compose && <ComposeModal staff={staff} onClose={()=>setCompose(false)} onDone={()=>{setCompose(false); setTab("sent"); load();}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600}}>{toast}</div>}
     </div>
   );
 };
 
-const Library = () => (
-  <div className="fi">
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-      <Input value="" onChange={() => {}} placeholder="🔍 Search by title, author, ISBN…" style={{ width:270 }}/>
-      <div style={{ display:"flex", gap:9 }}><Btn variant="secondary">+ Add Book</Btn><Btn variant="primary">📋 Issue Book</Btn></div>
-    </div>
-    <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12 }}>
-      {[["New Gen Mathematics","Macrae","Mathematics",12,3],["Comprehensive English","Bankole","Languages",8,0],["Biology for Schools","Mackean","Sciences",15,5],["Further Mathematics","Ilori","Mathematics",6,6],["Chemistry in Use","Austin","Sciences",10,2],["History of W. Africa","Ajayi","Humanities",7,1],["Physics Essentials","Nelkon","Sciences",9,4],["Computer Studies","Obasi","ICT",5,0]].map(([title,author,cat,total,out]) => (
-        <Card key={title} style={{ padding:"14px 15px" }}>
-          <div style={{ width:"100%", height:56, borderRadius:8, background:C.sky+"22", display:"flex", alignItems:"center", justifyContent:"center", fontSize:24, marginBottom:10 }}>📗</div>
-          <div style={{ fontSize:12, fontWeight:700, lineHeight:1.3 }}>{title}</div>
-          <div style={{ fontSize:10, color:C.textMuted, marginTop:3 }}>{author}</div>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10 }}>
-            <Badge color="gray" size="sm">{cat}</Badge>
-            <span style={{ fontSize:10, color:C.textMuted }}>{total-out}/{total}</span>
+const ComposeModal = ({ staff, onClose, onDone, flash }) => {
+  const [subject, setSubject] = useState("");
+  const [bodyText, setBodyText] = useState("");
+  const [type, setType] = useState("direct");
+  const [ids, setIds] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const toggle = uid => setIds(p => p.includes(uid) ? p.filter(x=>x!==uid) : [...p, uid]);
+  const send = async () => {
+    if (!bodyText.trim()) return flash("Enter a message.");
+    if (ids.length===0) return flash("Pick at least one recipient.");
+    setSaving(true);
+    try { await sendMessage({ subject, body:bodyText, type, recipient_ids:ids }); flash("Message sent."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not send."); setSaving(false); }
+  };
+  return (
+    <Modal title="Compose Message" onClose={onClose} width={540}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 150px",gap:11}}>
+          <Input label="Subject" value={subject} onChange={setSubject} placeholder="Optional"/>
+          <Sel label="Type" value={type} onChange={setType} options={[{value:"direct",label:"Direct"},{value:"announcement",label:"Announcement"}]}/>
+        </div>
+        <div>
+          <label style={{fontSize:11,fontWeight:700,color:C.textMid,letterSpacing:".4px",textTransform:"uppercase"}}>Message</label>
+          <textarea value={bodyText} onChange={e=>setBodyText(e.target.value)} placeholder="Type your message to staff…"
+            style={{width:"100%",minHeight:96,marginTop:4,padding:"10px 12px",borderRadius:8,border:`1px solid ${C.border}`,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical",boxSizing:"border-box"}}/>
+        </div>
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <label style={{fontSize:11,fontWeight:700,color:C.textMid,letterSpacing:".4px",textTransform:"uppercase"}}>Recipients ({ids.length})</label>
+            <button onClick={()=>setIds(ids.length===staff.length?[]:staff.map(s=>s.user_id))} style={{fontSize:11,color:C.accent,background:"none",border:"none",cursor:"pointer",fontWeight:600}}>{ids.length===staff.length?"Clear all":"Select all staff"}</button>
           </div>
-        </Card>
-      ))}
+          {staff.length===0 ? <div style={{fontSize:12,color:C.textMuted}}>No staff to message yet.</div> : (
+          <div style={{maxHeight:180,overflowY:"auto",border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 4px"}}>
+            {staff.map(st=>(
+              <label key={st.user_id} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 8px",fontSize:12.5,cursor:"pointer"}}>
+                <input type="checkbox" checked={ids.includes(st.user_id)} onChange={()=>toggle(st.user_id)}/>
+                {st.first_name} {st.last_name} <span style={{color:C.textMuted,fontSize:11}}>· {st.designation||st.department||"Staff"}</span>
+              </label>
+            ))}
+          </div>
+          )}
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={send} disabled={saving}>{saving?"Sending…":"Send"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
+
+const Library = () => {
+  const [tab, setTab]   = useState("catalog");
+  const [books, setBooks] = useState([]);
+  const [loans, setLoans] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [issueFor, setIssueFor] = useState(null);   // book obj
+  const [toast, setToast] = useState("");
+  const flash = m => { setToast(m); setTimeout(() => setToast(""), 3000); };
+
+  const loadBooks = () => getBooks().then(r => setBooks(arrOf(r))).catch(() => setBooks([]));
+  const loadLoans = () => getLoans().then(r => setLoans(arrOf(r))).catch(() => setLoans([]));
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setLoading(true);
+      try {
+        await Promise.all([loadBooks(), loadLoans()]);
+        setStudents(arrOf(await getStudents({ per_page:200, sort:"class" }).catch(() => []), "students"));
+      } finally { if (!dead) setLoading(false); }
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  const studOpts = [{value:"",label:"Select student…"},...students.map(s=>({value:String(s.id),label:`${[s.first_name,s.last_name].filter(Boolean).join(" ")} — ${s.class_name||s.student_id}`}))];
+  const shown = books.filter(b => `${b.title} ${b.author} ${b.isbn}`.toLowerCase().includes(search.toLowerCase()));
+  const doReturn = async loan => {
+    try { await apiReturnBook(loan.id); flash("Book returned."); loadLoans(); loadBooks(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not return."); }
+  };
+  const active = loans.filter(l => !l.returned_at);
+  const th = { padding:"10px 13px", textAlign:"left", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase" };
+
+  return (
+    <div className="fi">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <Tabs tabs={[{id:"catalog",label:"📚 Catalog"},{id:"loans",label:"📋 Loans"}]} active={tab} onChange={setTab}/>
+        <div style={{display:"flex",gap:9,alignItems:"center"}}>
+          {tab==="catalog" && <Input value={search} onChange={setSearch} placeholder="🔍 Title, author, ISBN…" style={{width:230}}/>}
+          {tab==="catalog" && <Btn variant="primary" size="sm" onClick={()=>setAddOpen(true)}>+ Add Book</Btn>}
+        </div>
+      </div>
+      <div style={{marginTop:16}}>
+        {loading ? <Card style={{textAlign:"center",color:C.textMuted,padding:"44px"}}>Loading library…</Card> : tab==="catalog" ? (
+          books.length===0 ? <Card style={{textAlign:"center",padding:"52px 16px"}}><div style={{fontSize:34,marginBottom:10}}>📚</div><div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No books in the catalog yet</div><div style={{fontSize:13,color:C.textMid}}>Click “Add Book” to build your library.</div></Card> : (
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))",gap:12}}>
+            {shown.map(b=>(
+              <Card key={b.id} style={{padding:"14px 15px"}}>
+                <div style={{width:"100%",height:56,borderRadius:8,background:C.sky+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,marginBottom:10}}>📗</div>
+                <div style={{fontSize:12,fontWeight:700,lineHeight:1.3}}>{b.title}</div>
+                <div style={{fontSize:10,color:C.textMuted,marginTop:3}}>{b.author||"—"}</div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10}}>
+                  <Badge color="gray" size="sm">{b.category||"General"}</Badge>
+                  <span style={{fontSize:10,color:C.textMuted}}>{b.available}/{b.total_copies}</span>
+                </div>
+                <Btn size="sm" variant="secondary" onClick={()=>setIssueFor(b)} disabled={Number(b.available)<1} style={{marginTop:10,width:"100%",justifyContent:"center"}}>{Number(b.available)<1?"All out":"Issue"}</Btn>
+              </Card>
+            ))}
+          </div>
+          )
+        ) : (
+          active.length===0 ? <Card style={{textAlign:"center",padding:"52px 16px"}}><div style={{fontSize:34,marginBottom:10}}>📋</div><div style={{fontSize:13,color:C.textMid}}>No books are currently on loan.</div></Card> : (
+          <Card style={{padding:0,overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
+              <thead><tr style={{background:"#F8FAFC"}}>{["Book","Student","Issued","Due","Status",""].map((h,i)=><th key={i} style={th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {active.map(l=>{ const overdue=new Date(l.due_date)<new Date(new Date().toDateString()); return (
+                  <tr key={l.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                    <td style={{padding:"10px 13px",fontSize:12,fontWeight:600}}>{l.title}</td>
+                    <td style={{padding:"10px 13px",fontSize:12}}>{l.first_name} {l.last_name}</td>
+                    <td style={{padding:"10px 13px",fontSize:11,color:C.textMuted}}>{l.issued_at}</td>
+                    <td style={{padding:"10px 13px",fontSize:11,color:overdue?C.coral:C.textMuted}}>{l.due_date}</td>
+                    <td style={{padding:"10px 13px"}}><Badge color={overdue?"red":"green"} size="sm">{overdue?"Overdue":"On loan"}</Badge></td>
+                    <td style={{padding:"10px 13px"}}><Btn size="sm" variant="secondary" onClick={()=>doReturn(l)}>Return</Btn></td>
+                  </tr>
+                );})}
+              </tbody>
+            </table>
+          </Card>
+          )
+        )}
+      </div>
+      {addOpen && <AddBookModal onClose={()=>setAddOpen(false)} onDone={()=>{setAddOpen(false); loadBooks();}} flash={flash}/>}
+      {issueFor && <IssueBookModal book={issueFor} studOpts={studOpts} onClose={()=>setIssueFor(null)} onDone={()=>{setIssueFor(null); loadBooks(); loadLoans();}} flash={flash}/>}
+      {toast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600}}>{toast}</div>}
     </div>
-  </div>
-);
+  );
+};
+
+const AddBookModal = ({ onClose, onDone, flash }) => {
+  const [f, setF] = useState({ title:"", author:"", isbn:"", category:"", total_copies:"1" });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!f.title.trim()) return flash("Book title is required.");
+    setSaving(true);
+    try { await createBook({ ...f, total_copies:parseInt(f.total_copies)||1 }); flash("Book added."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not add book."); setSaving(false); }
+  };
+  return (
+    <Modal title="Add Book" onClose={onClose} width={480}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Input label="Title" value={f.title} onChange={v=>setF(s=>({...s,title:v}))}/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+          <Input label="Author" value={f.author} onChange={v=>setF(s=>({...s,author:v}))}/>
+          <Input label="Category" value={f.category} onChange={v=>setF(s=>({...s,category:v}))} placeholder="Mathematics…"/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11}}>
+          <Input label="ISBN" value={f.isbn} onChange={v=>setF(s=>({...s,isbn:v}))}/>
+          <Input label="Copies" type="number" value={f.total_copies} onChange={v=>setF(s=>({...s,total_copies:v}))}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Saving…":"Add Book"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
+
+const IssueBookModal = ({ book, studOpts, onClose, onDone, flash }) => {
+  const [sid, setSid] = useState("");
+  const [due, setDue] = useState(new Date(Date.now()+14*864e5).toISOString().slice(0,10));
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!sid) return flash("Pick a student.");
+    setSaving(true);
+    try { await issueBook({ book_id:book.id, student_id:Number(sid), due_date:due }); flash("Book issued."); onDone(); }
+    catch (e) { flash(e?.message || e?.data?.message || "Could not issue book."); setSaving(false); }
+  };
+  return (
+    <Modal title={`Issue: ${book.title}`} onClose={onClose} width={440}>
+      <div style={{display:"flex",flexDirection:"column",gap:11}}>
+        <Sel label="Student" value={sid} onChange={setSid} options={studOpts}/>
+        <Input label="Due date" type="date" value={due} onChange={setDue}/>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:9,marginTop:4}}><Btn variant="secondary" onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save} disabled={saving}>{saving?"Issuing…":"Issue Book"}</Btn></div>
+      </div>
+    </Modal>
+  );
+};
 
 // Controlled editor for a teacher's assignments — class-teacher-of (form teacher,
 // grants remarks + psychomotor/affective) and teaching pairs (grants grade entry).
