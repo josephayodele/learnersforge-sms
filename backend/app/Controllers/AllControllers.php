@@ -1,4 +1,27 @@
 <?php
+// ─── Platform (HQ control-plane) ──────────────────────────────────────────────
+// A group-level super-admin ("HQ") can suspend this school by setting
+// platform_control.status = 'suspended' in THIS school's own database. The API
+// checks it on every request. The check is FAIL-OPEN: any error (table missing,
+// DB hiccup) leaves the school ACTIVE, so a problem in HQ can never black out
+// every school at once.
+class Platform {
+    public static function ensureActive(): void {
+        try {
+            $row = DB::one('SELECT status, message FROM platform_control WHERE id = 1');
+        } catch (\Throwable $e) {
+            return; // fail-open: never block on an infrastructure error
+        }
+        if ($row && ($row['status'] ?? 'active') === 'suspended') {
+            $msg = trim((string)($row['message'] ?? ''));
+            if ($msg === '') {
+                $msg = 'This school portal is temporarily unavailable. Please contact your administrator.';
+            }
+            respond(['suspended' => true, 'message' => $msg], 503, $msg);
+        }
+    }
+}
+
 // ─── DashboardController ──────────────────────────────────────────────────────
 class DashboardController {
     public static function index(array $user): void {

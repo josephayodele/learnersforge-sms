@@ -87,6 +87,11 @@ if (preg_match('#^(.*)/(\d+)$#', $uri, $m)) {
     $id   = (int)$m[2];
 }
 
+// ── Platform control ────────────────────────────────────────────────────────
+// HQ may have suspended this school. Returns 503 for every call when suspended;
+// fail-open if the control table is unreachable (see Platform::ensureActive).
+Platform::ensureActive();
+
 // ── Route ─────────────────────────────────────────────────────────────────────
 try {
 
