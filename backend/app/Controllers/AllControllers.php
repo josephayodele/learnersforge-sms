@@ -2631,6 +2631,147 @@ class StudentPortalController {
         }
         return false;
     }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // Mobile student endpoints — profile, password, fees, attendance, timetable,
+    // notices, and a consolidated dashboard. The exam/results/assignment endpoints
+    // above complete the set. All resolve the current student via me().
+    // ───────────────────────────────────────────────────────────────────────────
+
+    // Consolidated home screen: counts the student cares about at a glance.
+    public static function myDashboard(array $user): void {
+        $s = self::me($user);
+        $openExams = (int)(DB::one(
+            'SELECT COUNT(*) c FROM exams e WHERE e.class_id=? AND e.status="active"
+             AND NOT EXISTS (SELECT 1 FROM exam_submissions es WHERE es.exam_id=e.id AND es.student_id=?)',
+            [$s['class_id'], $s['id']])['c'] ?? 0);
+        $pendingAssignments = (int)(DB::one(
+            'SELECT COUNT(*) c FROM assignments a WHERE a.class_id=?
+             AND NOT EXISTS (SELECT 1 FROM assignment_submissions asm WHERE asm.assignment_id=a.id AND asm.student_id=?)',
+            [$s['class_id'], $s['id']])['c'] ?? 0);
+        $outstanding = (float)(DB::one('SELECT COALESCE(SUM(balance),0) t FROM invoices WHERE student_id=? AND status<>"paid"', [$s['id']])['t'] ?? 0);
+        $att = DB::one('SELECT COUNT(*) total, SUM(status="present") present FROM attendance WHERE student_id=?', [$s['id']]);
+        $rate = ($att && (int)$att['total'] > 0) ? (int)round(100 * (int)$att['present'] / (int)$att['total']) : null;
+        $unread = (int)(DB::one('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0', [(int)$user['id']])['c'] ?? 0);
+        respond([
+            'open_exams'           => $openExams,
+            'pending_assignments'  => $pendingAssignments,
+            'fees_outstanding'     => $outstanding,
+            'attendance_rate'      => $rate,
+            'unread_notifications' => $unread,
+        ]);
+    }
+
+    // Full profile for the signed-in student (read-only identity + guardian + school).
+    public static function profile(array $user): void {
+        $row = DB::one(
+            'SELECT s.id, s.student_id, s.admission_number, s.admission_date, s.blood_group, s.genotype,
+                    s.guardian_name, s.guardian_phone, s.guardian_email, s.guardian_address,
+                    u.first_name, u.last_name, u.email, u.phone, u.gender, u.date_of_birth, u.address, u.avatar_url,
+                    c.id AS class_id, c.name AS class_name
+             FROM students s JOIN users u ON u.id=s.user_id JOIN classes c ON c.id=s.class_id
+             WHERE s.user_id=? AND s.deleted_at IS NULL', [(int)$user['id']]);
+        if (!$row) respond(null, 403, 'This account is not a student.');
+        $row['school'] = DB::one('SELECT name, logo_url, motto, email, phone, address FROM schools WHERE id=?', [(int)$user['school_id']]);
+        respond($row);
+    }
+
+    // Student may update only their own contact details (not name/class/ID).
+    public static function updateProfile(array $user): void {
+        $s = self::me($user);
+        $b = body();
+        $uf = []; $up = [];
+        foreach (['phone', 'address', 'avatar_url'] as $f) {
+            if (array_key_exists($f, $b)) { $uf[] = "`$f`=?"; $up[] = ($b[$f] === '' ? null : $b[$f]); }
+        }
+        if ($uf) { $up[] = (int)$user['id']; DB::run('UPDATE users SET ' . implode(',', $uf) . ' WHERE id=?', $up); }
+        $sf = []; $sp = [];
+        foreach (['guardian_phone', 'guardian_email', 'guardian_address'] as $f) {
+            if (array_key_exists($f, $b)) { $sf[] = "`$f`=?"; $sp[] = ($b[$f] === '' ? null : $b[$f]); }
+        }
+        if ($sf) { $sp[] = $s['id']; DB::run('UPDATE students SET ' . implode(',', $sf) . ' WHERE id=?', $sp); }
+        respond(['updated' => true], 200, 'Profile updated');
+    }
+
+    public static function changePassword(array $user): void {
+        $b = body();
+        $cur = (string)($b['current_password'] ?? '');
+        $new = (string)($b['new_password'] ?? '');
+        if (strlen($new) < 6) respond(null, 422, 'New password must be at least 6 characters.');
+        $row = DB::one('SELECT password FROM users WHERE id=?', [(int)$user['id']]);
+        if (!$row || !password_verify($cur, $row['password'])) respond(null, 401, 'Current password is incorrect.');
+        DB::run('UPDATE users SET password=? WHERE id=?', [password_hash($new, PASSWORD_BCRYPT), (int)$user['id']]);
+        respond(['updated' => true], 200, 'Password changed');
+    }
+
+    // The student's own invoices, balance summary and recent payments.
+    public static function myFees(array $user): void {
+        $s = self::me($user);
+        $summary = DB::one(
+            'SELECT COALESCE(SUM(total_amount),0) billed, COALESCE(SUM(amount_paid),0) paid,
+                    COALESCE(SUM(balance),0) outstanding
+             FROM invoices WHERE student_id=?', [$s['id']]);
+        $invoices = DB::query(
+            'SELECT i.id, i.invoice_no, i.total_amount, i.amount_paid, i.balance, i.status, i.due_date, i.created_at,
+                    t.name AS term_name
+             FROM invoices i LEFT JOIN terms t ON t.id=i.term_id
+             WHERE i.student_id=? ORDER BY i.id DESC', [$s['id']]);
+        $payments = DB::query(
+            'SELECT p.amount, p.method, p.payment_date, p.reference, i.invoice_no
+             FROM payments p JOIN invoices i ON i.id=p.invoice_id
+             WHERE i.student_id=? ORDER BY p.id DESC LIMIT 20', [$s['id']]);
+        respond(['summary' => $summary, 'invoices' => $invoices, 'payments' => $payments]);
+    }
+
+    // Attendance summary + the most recent records.
+    public static function myAttendance(array $user): void {
+        $s = self::me($user);
+        $summary = DB::one(
+            'SELECT COUNT(*) total, SUM(status="present") present,
+                    SUM(status LIKE "absent%") absent, SUM(status LIKE "late%") late
+             FROM attendance WHERE student_id=?', [$s['id']]);
+        $rate = ($summary && (int)$summary['total'] > 0)
+            ? (int)round(100 * (int)$summary['present'] / (int)$summary['total']) : null;
+        $recent = DB::query('SELECT date, status, comment FROM attendance WHERE student_id=? ORDER BY date DESC LIMIT 30', [$s['id']]);
+        respond(['summary' => $summary, 'rate' => $rate, 'recent' => $recent]);
+    }
+
+    // The student's class timetable for the current term (all terms if none is current).
+    public static function myTimetable(array $user): void {
+        $s = self::me($user);
+        $where = 'tt.class_id=?'; $p = [$s['class_id']];
+        $term = DB::one('SELECT id FROM terms WHERE is_current=1 ORDER BY id DESC LIMIT 1');
+        if ($term) { $where .= ' AND tt.term_id=?'; $p[] = (int)$term['id']; }
+        $rows = DB::query(
+            'SELECT tt.day, tt.period, tt.start_time, tt.end_time, sub.name AS subject_name,
+                    CONCAT(u.first_name, " ", u.last_name) AS teacher
+             FROM timetable_slots tt
+             JOIN subjects sub ON sub.id=tt.subject_id
+             LEFT JOIN users u ON u.id=tt.teacher_id
+             WHERE ' . $where . '
+             ORDER BY FIELD(tt.day,"Monday","Tuesday","Wednesday","Thursday","Friday"), tt.period', $p);
+        respond($rows);
+    }
+
+    // Personal notifications + upcoming school/class events relevant to the student.
+    public static function myNotices(array $user): void {
+        $s = self::me($user);
+        $notifications = DB::query(
+            'SELECT id, title, body, type, is_read, created_at FROM notifications
+             WHERE user_id=? ORDER BY created_at DESC LIMIT 50', [(int)$user['id']]);
+        $events = DB::query(
+            'SELECT id, title, description, event_date, audience FROM events
+             WHERE school_id=? AND deleted_at IS NULL AND event_date >= CURDATE()
+               AND (audience="all_guardians" OR (audience="class_guardians" AND class_id=?))
+             ORDER BY event_date ASC LIMIT 20', [(int)$user['school_id'], $s['class_id']]);
+        respond(['notifications' => $notifications, 'events' => $events]);
+    }
+
+    // Mark one of the student's own notifications as read.
+    public static function markNotification(array $user, int $id): void {
+        DB::run('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?', [$id, (int)$user['id']]);
+        respond(['updated' => true]);
+    }
 }
 
 // ─── Notify ───────────────────────────────────────────────────────────────────

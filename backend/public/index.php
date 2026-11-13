@@ -313,6 +313,34 @@ try {
     } elseif ($path === '/api/v1/my/assignment-submit' && $method === 'POST') {
         StudentPortalController::submitAssignment(authGuard());
 
+    // ── Student portal: mobile (profile, fees, attendance, timetable, notices) ──
+    } elseif ($path === '/api/v1/my/dashboard' && $method === 'GET') {
+        StudentPortalController::myDashboard(authGuard());
+
+    } elseif ($path === '/api/v1/my/profile' && $method === 'GET') {
+        StudentPortalController::profile(authGuard());
+
+    } elseif ($path === '/api/v1/my/profile' && $method === 'PUT') {
+        StudentPortalController::updateProfile(authGuard());
+
+    } elseif ($path === '/api/v1/my/change-password' && $method === 'POST') {
+        StudentPortalController::changePassword(authGuard());
+
+    } elseif ($path === '/api/v1/my/fees' && $method === 'GET') {
+        StudentPortalController::myFees(authGuard());
+
+    } elseif ($path === '/api/v1/my/attendance' && $method === 'GET') {
+        StudentPortalController::myAttendance(authGuard());
+
+    } elseif ($path === '/api/v1/my/timetable' && $method === 'GET') {
+        StudentPortalController::myTimetable(authGuard());
+
+    } elseif ($path === '/api/v1/my/notices' && $method === 'GET') {
+        StudentPortalController::myNotices(authGuard());
+
+    } elseif ($path === '/api/v1/my/notifications' && $id && $method === 'PUT') {
+        StudentPortalController::markNotification(authGuard(), $id);
+
     // ── Inventory ─────────────────────────────────────────────────────────────
     } elseif ($path === '/api/v1/inventory' && $method === 'GET') {
         InventoryController::index(authGuard());
