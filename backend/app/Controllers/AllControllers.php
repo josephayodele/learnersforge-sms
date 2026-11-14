@@ -120,6 +120,21 @@ class StudentController {
         if (!Perm::canAccessClass($user, (int)$s['class_id'])) respond(null, 403, 'You are not assigned to this student\'s class.');
         $s['attendance_summary'] = DB::one('SELECT COUNT(*) total, SUM(status="present") present, SUM(status LIKE "absent%") absent, SUM(status LIKE "late%") late FROM attendance WHERE student_id=?',[$id]);
         $s['invoice'] = DB::one('SELECT * FROM invoices WHERE student_id=? ORDER BY id DESC LIMIT 1',[$id]);
+        // Real per-subject performance for the current term: total CA score over total
+        // possible, as a percentage. Empty when nothing has been graded yet.
+        $term = DB::one('SELECT id FROM terms WHERE is_current=1 ORDER BY id DESC LIMIT 1')
+             ?? DB::one('SELECT id FROM terms ORDER BY id DESC LIMIT 1');
+        $s['performance'] = $term ? DB::query(
+            'SELECT sub.name AS subject,
+                    ROUND(100 * SUM(g.score) / NULLIF(SUM(ct.max_score),0)) AS pct
+             FROM grades g
+             JOIN ca_types ct ON ct.id = g.ca_type_id
+             JOIN subjects sub ON sub.id = g.subject_id
+             WHERE g.student_id = ? AND g.term_id = ?
+             GROUP BY sub.id, sub.name
+             HAVING SUM(ct.max_score) > 0
+             ORDER BY sub.name',
+            [$id, (int)$term['id']]) : [];
         respond($s);
     }
 

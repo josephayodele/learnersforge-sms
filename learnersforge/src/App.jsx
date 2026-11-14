@@ -993,6 +993,7 @@ const Students = () => {
   const [sort,setSort]=useState("name");   // name | id | class | email
   const [dir,setDir]=useState("asc");
   const [selected,setSelected]=useState(null);
+  const [detail,setDetail]=useState(null);   // full record for the open student (attendance + performance)
   const [students,setStudents]=useState([]);
   const [meta,setMeta]=useState({total:0,page:1,per_page:25,pages:1});
   const [classes,setClasses]=useState([]);
@@ -1058,6 +1059,17 @@ const Students = () => {
     return ()=>{ cancelled=true; };
   },[search,classId,classForm,page,perPage,sort,dir,reloadKey]);
 
+  // When a student is opened, load their full record (real attendance + per-subject
+  // performance). detail===null means "still loading"; {} means loaded-but-empty.
+  useEffect(()=>{
+    if(!selected){ setDetail(null); return; }
+    let cancelled=false; setDetail(null);
+    getStudent(selected.id)
+      .then(res=>{ if(!cancelled) setDetail(res?.data ?? res ?? {}); })
+      .catch(()=>{ if(!cancelled) setDetail({}); });
+    return ()=>{ cancelled=true; };
+  },[selected]);
+
   // Click a column header to sort (toggles direction on the active column).
   const toggleSort = col => { if(sort===col){ setDir(d=>d==="asc"?"desc":"asc"); } else { setSort(col); setDir("asc"); } setPage(1); };
   const sortArrow = col => sort===col ? (dir==="asc" ? " ▲" : " ▼") : "";
@@ -1086,7 +1098,22 @@ const Students = () => {
     finally { setDeleting(false); }
   };
 
-  if(selected) return (
+  if(selected){
+    const d = detail || {};
+    const loadingDetail = detail===null;
+    const att = d.attendance_summary || {};
+    const attTotal = Number(att.total||0);
+    const perf = Array.isArray(d.performance) ? d.performance : [];
+    const inv = d.invoice;
+    const feeStatus = inv ? (inv.status==="paid"?"Paid":inv.status==="partial"?"Part-paid":"Unpaid")
+                          : (selected.fees && selected.fees!=="—" ? selected.fees : null);
+    const guardian = selected.guardian_name || d.guardian_name || "—";
+    const phone    = selected.guardian_phone || selected.phone || d.guardian_phone || "—";
+    const admNo    = d.admission_number || selected.admission_number || "—";
+    const gender   = (selected.gender || d.gender) ? (selected.gender||d.gender).replace(/^./,ch=>ch.toUpperCase()) : "—";
+    const avgPct   = perf.length ? Math.round(perf.reduce((a,p)=>a+Number(p.pct||0),0)/perf.length) : null;
+    const perfC    = [C.sky,C.accent,C.amber,C.purple,C.coral,C.teal||C.sky];
+    return (
     <div className="fi">
       <Btn onClick={()=>setSelected(null)} variant="secondary" size="sm" style={{marginBottom:16}}>← Back</Btn>
       <div style={{display:"grid",gridTemplateColumns:"270px 1fr",gap:16}}>
@@ -1095,42 +1122,55 @@ const Students = () => {
             <Avatar initials={selected.avatar} size={66} color={C.accent}/>
             <div style={{marginTop:10,fontSize:15,fontWeight:700}}>{selected.name}</div>
             <div style={{fontSize:11,color:C.textMuted,marginTop:3}}>{selected.class}</div>
-            <Badge color={selected.fees==="Paid"?"green":"red"}>{selected.fees}</Badge>
+            {feeStatus && <Badge color={feeStatus==="Paid"?"green":feeStatus==="Part-paid"?"amber":"red"}>{feeStatus}</Badge>}
           </div>
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:12,display:"flex",flexDirection:"column",gap:9}}>
-            {[["ID",selected.id],["GPA",selected.gpa+" / 4.0"],["Status","Active"],["Guardian","Mr. Emmanuel Okonkwo"],["Phone","+234 801 234 5678"]].map(([k,v])=>(
-              <div key={k} style={{display:"flex",justifyContent:"space-between",fontSize:12}}><span style={{color:C.textMuted}}>{k}</span><span style={{fontWeight:600}}>{v}</span></div>
+            {[["Student ID",selected.student_id||selected.id],["Admission No",admNo],["Gender",gender],["Term Average",avgPct!=null?avgPct+"%":"—"],["Guardian",guardian],["Phone",phone]].map(([k,v])=>(
+              <div key={k} style={{display:"flex",justifyContent:"space-between",fontSize:12,gap:10}}><span style={{color:C.textMuted}}>{k}</span><span style={{fontWeight:600,textAlign:"right"}}>{v}</span></div>
             ))}
           </div>
         </Card>
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
           <Card>
             <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>Academic Performance</div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:9}}>
-              {[["Mathematics",78,C.sky],["English",85,C.accent],["Biology",72,C.amber],["Physics",90,C.purple],["Chemistry",68,C.coral],["History",82,C.sky]].map(([s,v,c])=>(
-                <div key={s} style={{padding:"10px 11px",borderRadius:9,border:`1px solid ${C.border}`}}>
-                  <div style={{fontSize:10,color:C.textMuted,marginBottom:4}}>{s}</div>
-                  <div style={{fontSize:19,fontWeight:700,color:v>=80?C.accentDark:v>=60?C.amber:C.coral}}>{v}%</div>
-                  <div style={{marginTop:4,height:4,borderRadius:99,background:C.border}}><div style={{height:4,borderRadius:99,background:c,width:v+"%"}}/></div>
-                </div>
-              ))}
-            </div>
+            {loadingDetail ? (
+              <div style={{fontSize:12,color:C.textMuted,padding:"10px 0"}}>Loading…</div>
+            ) : perf.length===0 ? (
+              <div style={{fontSize:12,color:C.textMuted,padding:"16px 0",textAlign:"center"}}>No results recorded for this term yet.</div>
+            ) : (
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:9}}>
+                {perf.map((p,i)=>{ const v=Number(p.pct||0); const c=perfC[i%perfC.length]; return (
+                  <div key={p.subject} style={{padding:"10px 11px",borderRadius:9,border:`1px solid ${C.border}`}}>
+                    <div style={{fontSize:10,color:C.textMuted,marginBottom:4}}>{p.subject}</div>
+                    <div style={{fontSize:19,fontWeight:700,color:v>=80?C.accentDark:v>=60?C.amber:C.coral}}>{v}%</div>
+                    <div style={{marginTop:4,height:4,borderRadius:99,background:C.border}}><div style={{height:4,borderRadius:99,background:c,width:v+"%"}}/></div>
+                  </div>
+                );})}
+              </div>
+            )}
           </Card>
           <Card>
             <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Attendance</div>
-            <div style={{display:"flex",gap:14}}>
-              {[["Present","187","green"],["Absent","12","red"],["Late","6","amber"]].map(([l,v,c])=>(
-                <div key={l} style={{flex:1,padding:"11px",borderRadius:9,background:C[c+"Light"]||"#F3F4F6",textAlign:"center"}}>
-                  <div style={{fontSize:19,fontWeight:700}}>{v}</div>
-                  <div style={{fontSize:10,color:C.textMuted,marginTop:2}}>{l}</div>
-                </div>
-              ))}
-            </div>
+            {loadingDetail ? (
+              <div style={{fontSize:12,color:C.textMuted,padding:"10px 0"}}>Loading…</div>
+            ) : attTotal===0 ? (
+              <div style={{fontSize:12,color:C.textMuted,padding:"16px 0",textAlign:"center"}}>No attendance recorded yet.</div>
+            ) : (
+              <div style={{display:"flex",gap:14}}>
+                {[["Present",Number(att.present||0),"green"],["Absent",Number(att.absent||0),"red"],["Late",Number(att.late||0),"amber"]].map(([l,v,c])=>(
+                  <div key={l} style={{flex:1,padding:"11px",borderRadius:9,background:C[c+"Light"]||"#F3F4F6",textAlign:"center"}}>
+                    <div style={{fontSize:19,fontWeight:700}}>{v}</div>
+                    <div style={{fontSize:10,color:C.textMuted,marginTop:2}}>{l}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
         </div>
       </div>
     </div>
-  );
+    );
+  }
   return (
     <div className="fi">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
