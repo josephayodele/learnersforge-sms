@@ -94,6 +94,7 @@ class StudentController {
             case 'id':    $orderBy = "s.student_id $dir"; break;
             case 'class': $orderBy = "c.name $dir, u.last_name ASC, u.first_name ASC"; break;
             case 'email': $orderBy = "u.email $dir"; break;
+            case 'gender': $orderBy = "u.gender $dir, u.last_name ASC, u.first_name ASC"; break;
             case 'name':
             default:      $orderBy = "u.last_name $dir, u.first_name $dir"; break;
         }

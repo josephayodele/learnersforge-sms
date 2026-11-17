@@ -1010,6 +1010,8 @@ const Students = () => {
   const [deleting,setDeleting]=useState(false);
   const [toast,setToast]=useState("");
   const flash=msg=>{ setToast(msg); setTimeout(()=>setToast(""),2600); };
+  const [exportOpen,setExportOpen]=useState(false);   // export menu open?
+  const [exporting,setExporting]=useState(false);     // export in progress
 
   // Class / arm options for the filter dropdowns.
   useEffect(()=>{
@@ -1098,6 +1100,60 @@ const Students = () => {
     finally { setDeleting(false); }
   };
 
+  // ── Export ──────────────────────────────────────────────────────────────────
+  const titleCase = g => g ? String(g).replace(/^./,ch=>ch.toUpperCase()) : "—";
+  // Pull EVERY student matching the current search / class filters (all pages),
+  // in the current sort order — not just the visible page.
+  const fetchAllStudents = async () => {
+    const out = []; let pageN = 1, pages = 1, guard = 0;
+    do {
+      const params = { page: pageN, per_page: 200, sort, dir };
+      if (search) params.search = search;
+      if (classId) params.class_id = classId;
+      else if (classForm) params.form = classForm;
+      const res = await getStudents(params);
+      const data = res?.data ?? res ?? {};
+      const list = Array.isArray(data?.students) ? data.students
+                 : Array.isArray(data) ? data
+                 : Array.isArray(data?.data) ? data.data : [];
+      out.push(...list.map(normStudent));
+      pages = data?.meta?.pages ?? 1;
+      if (!list.length) break;
+    } while (++pageN <= pages && ++guard < 100);
+    return out;
+  };
+  const doExport = async fmt => {
+    setExportOpen(false);
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const all = await fetchAllStudents();
+      if (!all.length) { flash("No students to export."); return; }
+      const cols = ["#","Name","Student ID","Class","Gender","Guardian","Phone"];
+      const rows = all.map((s,i)=>[ i+1, s.name||"—", s.student_id||s.id||"—", s.class||"—", titleCase(s.gender), s.guardian_name||"—", s.guardian_phone||s.phone||"—" ]);
+      const stamp = new Date().toISOString().slice(0,10);
+      const fileBase = `Students_${stamp}`;
+      if (fmt==="excel") {
+        const mod = await import("xlsx");
+        const XLSX = mod?.utils ? mod : (mod?.default || mod);
+        if(!XLSX?.utils) throw new Error("Spreadsheet export failed to load. Please retry.");
+        const ws = XLSX.utils.aoa_to_sheet([cols, ...rows]);
+        ws["!cols"] = [{wch:5},{wch:26},{wch:14},{wch:16},{wch:9},{wch:24},{wch:16}];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Students");
+        XLSX.writeFile(wb, fileBase + ".xlsx");
+      } else {
+        const th = cols.map(c=>`<th style="text-align:left;border:1px solid #bbb;padding:6px 9px;background:#f3f4f6;font-size:12px">${escHtml(c)}</th>`).join("");
+        const trs = rows.map(r=>`<tr>${r.map(c=>`<td style="border:1px solid #ddd;padding:5px 9px;font-size:12px">${escHtml(c)}</td>`).join("")}</tr>`).join("");
+        const body = `<h1>Students</h1><p class="mk">${all.length} student${all.length===1?"":"s"} · exported ${stamp}</p>`
+                   + `<table style="border-collapse:collapse;width:100%"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`;
+        if (fmt==="word") downloadDoc(fileBase, "Students", body);
+        else if (!printDocPdf("Students", body)) flash("Allow pop-ups for this site to export as PDF.");
+      }
+    } catch(err){ flash(err?.message || "Export failed."); }
+    finally { setExporting(false); }
+  };
+
   if(selected){
     const d = detail || {};
     const loadingDetail = detail===null;
@@ -1173,9 +1229,23 @@ const Students = () => {
   }
   return (
     <div className="fi">
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:10}}>
         <Input value={searchInput} onChange={setSearchInput} placeholder="🔍 Search name or ID…" style={{width:250}}/>
-        {isAdminUser && <div style={{display:"flex",gap:8}}><Btn variant="secondary" onClick={()=>setShowImport(true)}>📥 Import Students</Btn><Btn variant="primary" onClick={()=>setShowAdd(true)}>+ Add Student</Btn></div>}
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <div style={{position:"relative"}}>
+            <Btn variant="secondary" onClick={()=>setExportOpen(o=>!o)} disabled={exporting}>{exporting?"Exporting…":"⬇ Export ▾"}</Btn>
+            {exportOpen && (<>
+              <div onClick={()=>setExportOpen(false)} style={{position:"fixed",inset:0,zIndex:40}}/>
+              <div style={{position:"absolute",right:0,top:"calc(100% + 6px)",zIndex:41,background:"#fff",border:`1px solid ${C.border}`,borderRadius:10,boxShadow:"0 10px 30px rgba(0,0,0,.12)",overflow:"hidden",minWidth:180}}>
+                {[["pdf","📄  PDF"],["word","📝  Word (.doc)"],["excel","📊  Excel (.xlsx)"]].map(([f,label])=>(
+                  <div key={f} onClick={()=>doExport(f)} style={{padding:"9px 14px",fontSize:12,fontWeight:500,color:C.textMid,cursor:"pointer",whiteSpace:"nowrap"}}
+                       onMouseEnter={e=>e.currentTarget.style.background="#F8FAFC"} onMouseLeave={e=>e.currentTarget.style.background="#fff"}>{label}</div>
+                ))}
+              </div>
+            </>)}
+          </div>
+          {isAdminUser && <><Btn variant="secondary" onClick={()=>setShowImport(true)}>📥 Import Students</Btn><Btn variant="primary" onClick={()=>setShowAdd(true)}>+ Add Student</Btn></>}
+        </div>
       </div>
       <div style={{display:"flex",gap:10,alignItems:"flex-end",flexWrap:"wrap",marginBottom:16}}>
         <Sel label="Class" value={classForm} onChange={v=>{ setClassForm(v); setArm(""); setPage(1); }}
@@ -1245,7 +1315,7 @@ const Students = () => {
         <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
           <thead><tr style={{borderBottom:`1px solid ${C.border}`,background:"#F8FAFC"}}>
             <th style={{padding:"10px 15px",width:34}}>{isAdminUser && <input type="checkbox" checked={allOnPage} onChange={toggleAll} title="Select all on this page" style={{width:15,height:15,cursor:"pointer"}}/>}</th>
-            {[["Student","name"],["ID","id"],["Class","class"],["GPA",null],["Fees",null],["Action",null]].map(([h,col])=>(
+            {[["Student","name"],["ID","id"],["Class","class"],["Gender","gender"],["GPA",null],["Fees",null],["Action",null]].map(([h,col])=>(
               <th key={h} onClick={col?()=>toggleSort(col):undefined}
                   style={{padding:"10px 15px",textAlign:"left",fontSize:10,fontWeight:700,color:col&&sort===col?C.accentDark:C.textMuted,textTransform:"uppercase",letterSpacing:".5px",cursor:col?"pointer":"default",userSelect:"none",whiteSpace:"nowrap"}}
                   title={col?"Click to sort":undefined}>{h}{col?<span style={{color:C.accent}}>{sortArrow(col)}</span>:null}</th>
@@ -1253,13 +1323,14 @@ const Students = () => {
           </tr></thead>
           <tbody>
             {students.length===0 ? (
-              <tr><td colSpan={7} style={{padding:"36px 15px",textAlign:"center",fontSize:12,color:C.textMuted}}>{hasFilters?"No students match these filters.":"No students yet."}</td></tr>
+              <tr><td colSpan={8} style={{padding:"36px 15px",textAlign:"center",fontSize:12,color:C.textMuted}}>{hasFilters?"No students match these filters.":"No students yet."}</td></tr>
             ) : students.map((s,i)=>(
               <tr key={s.id} style={{borderBottom:`1px solid ${C.border}`,transition:"background .1s",background:sel.has(s.id)?C.accentLight:"transparent"}} onMouseEnter={e=>{if(!sel.has(s.id))e.currentTarget.style.background="#F8FAFC"}} onMouseLeave={e=>{e.currentTarget.style.background=sel.has(s.id)?C.accentLight:"transparent"}}>
                 <td style={{padding:"10px 15px"}}>{isAdminUser && <input type="checkbox" checked={sel.has(s.id)} onChange={()=>toggle(s.id)} style={{width:15,height:15,cursor:"pointer"}}/>}</td>
                 <td style={{padding:"10px 15px"}}><div style={{display:"flex",alignItems:"center",gap:9}}><Avatar initials={s.avatar} size={28} color={[C.accent,C.sky,C.purple,C.amber,C.coral][i%5]}/><span style={{fontSize:12,fontWeight:600}}>{s.name}</span></div></td>
                 <td style={{padding:"10px 15px",fontSize:11,color:C.textMuted,fontFamily:"monospace"}}>{s.student_id||s.id}</td>
                 <td style={{padding:"10px 15px",fontSize:12}}>{s.class}</td>
+                <td style={{padding:"10px 15px",fontSize:12,color:C.textMid}}>{s.gender ? s.gender.replace(/^./,ch=>ch.toUpperCase()) : "—"}</td>
                 <td style={{padding:"10px 15px",fontSize:13,fontWeight:700,color:s.gpa>=3.5?C.accentDark:s.gpa>=2.5?C.amber:C.coral}}>{s.gpa}</td>
                 <td style={{padding:"10px 15px"}}><Badge color={s.fees==="Paid"?"green":"red"} size="sm">{s.fees}</Badge></td>
                 <td style={{padding:"10px 15px"}}><div style={{display:"flex",gap:6}}><Btn onClick={()=>setSelected(s)} size="sm" variant="secondary">View</Btn><Btn onClick={()=>setEditStu(s)} size="sm" variant="secondary">Edit</Btn>{isAdminUser && <Btn onClick={()=>askDeleteOne(s)} size="sm" variant="danger">Delete</Btn>}</div></td>
