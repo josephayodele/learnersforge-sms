@@ -4,7 +4,7 @@ import QRCode from "qrcode";
 import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
          createSubject, deleteSubject, getClassSubjects, mapClassSubject, unmapClassSubject,
-         getAcademicYears, createAcademicYear, setCurrentAcademicYear,
+         getAcademicYears, createAcademicYear, setCurrentAcademicYear, setCurrentTerm,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, resetScores, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe, getMyAssignments,
@@ -1478,7 +1478,7 @@ const Attendance = () => {
 
   useEffect(() => {
     getClasses().then(r => { const l = arrOf(r); setClasses(l); if (l[0]) setClassId(String(l[0].id)); }).catch(() => {});
-    getTerms().then(r => { const l = arrOf(r); setTerms(l); if (l.length) setTermId(String(l[l.length-1].id)); }).catch(() => {});
+    getTerms().then(r => { const l = arrOf(r); setTerms(l); if (l.length) setTermId(String((l.find(t=>Number(t.is_current)===1)||l[l.length-1]).id)); }).catch(() => {});
   }, []);
 
   // Load roster + any attendance already saved for this class/date/term.
@@ -1883,7 +1883,7 @@ const BroadsheetTab = ({ flash, classOptions }) => {
   const [loading,setLoading]=useState(false);
   const [downloading,setDownloading]=useState(false);
 
-  useEffect(()=>{ getTerms().then(r=>{ const l=arrOf(r); setTerms(l); if(l.length) setTermId(String(l[l.length-1].id)); }).catch(()=>{}); },[]);
+  useEffect(()=>{ getTerms().then(r=>{ const l=arrOf(r); setTerms(l); if(l.length) setTermId(String((l.find(t=>Number(t.is_current)===1)||l[l.length-1]).id)); }).catch(()=>{}); },[]);
   useEffect(()=>{ if(!classId && classOptions?.length) setClassId(String(classOptions[0].value)); },[classOptions,classId]);
 
   useEffect(()=>{
@@ -2027,7 +2027,7 @@ const AttendanceSummaryTab = ({ flash }) => {
 
   useEffect(()=>{
     getClasses().then(r=>{ const l=arrOf(r); setClasses(l); if(l[0]) setClassId(String(l[0].id)); }).catch(()=>{});
-    getTerms().then(r=>{ const l=arrOf(r); setTerms(l); if(l.length) setTermId(String(l[l.length-1].id)); }).catch(()=>{});
+    getTerms().then(r=>{ const l=arrOf(r); setTerms(l); if(l.length) setTermId(String((l.find(t=>Number(t.is_current)===1)||l[l.length-1]).id)); }).catch(()=>{});
   },[]);
 
   // Pull the roster + any saved totals for the selected class/term.
@@ -2232,7 +2232,7 @@ const CustomStudentRemark = ({ classes, canManage, flash }) => {
   const allowed = canManage(classId);
 
   useEffect(() => {
-    getTerms().then(r => { const l = arrOf(r); setTerms(l); if (l.length) setTermId(String(l[l.length-1].id)); }).catch(() => {});
+    getTerms().then(r => { const l = arrOf(r); setTerms(l); if (l.length) setTermId(String((l.find(t=>Number(t.is_current)===1)||l[l.length-1]).id)); }).catch(() => {});
   }, []);
 
   // Roster when class changes.
@@ -3372,7 +3372,7 @@ const CBTCreate = ({ onNav }) => {
     getMyAssignments().then(res => { if (!cancelled) setMyAssign(res?.data ?? res ?? null); }).catch(() => {});
     getClasses().then(res => { if (!cancelled) setClassList(arrOf(res)); }).catch(() => {});
     getSubjects().then(res => { if (!cancelled) setSubjectList(arrOf(res)); }).catch(() => {});
-    getTerms().then(res => { if (!cancelled) { const l = arrOf(res); setTermList(l); if (l.length) setTermId(String(l[l.length-1].id)); } }).catch(() => {});
+    getTerms().then(res => { if (!cancelled) { const l = arrOf(res); setTermList(l); if (l.length) setTermId(String((l.find(t=>Number(t.is_current)===1)||l[l.length-1]).id)); } }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
@@ -4004,7 +4004,7 @@ const AITools = () => {
   // Insights: load class + term lists once, and the roster when a class is picked.
   useEffect(() => {
     getClasses().then(r => setInsClasses(arrOf(r))).catch(() => {});
-    getTerms().then(r => { const l = arrOf(r); setInsTerms(l); if (l.length) setInsTerm(String(l[l.length-1].id)); }).catch(() => {});
+    getTerms().then(r => { const l = arrOf(r); setInsTerms(l); if (l.length) setInsTerm(String((l.find(t=>Number(t.is_current)===1)||l[l.length-1]).id)); }).catch(() => {});
   }, []);
   useEffect(() => {
     if (!insClass) { setInsStudents([]); setInsStudent(""); return; }
@@ -5628,11 +5628,18 @@ const AcademicSessions = () => {
     try { await setCurrentAcademicYear(y.id); await reload(); }
     catch (e) { setErr(e?.message || "Could not set current session."); }
   };
+  // Set the global current TERM — pages like Grades default to it. Also makes the
+  // term's parent session current, so header + defaults agree.
+  const makeCurrentTerm = async (t) => {
+    setErr(null); setMsg(null);
+    try { await setCurrentTerm(t.id); setMsg(`"${t.name}" is now the current term.`); await reload(); setTimeout(() => setMsg(null), 3000); }
+    catch (e) { setErr(e?.message || e?.error || "Could not set current term."); }
+  };
 
   return (
     <Card>
       <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>📅 Academic Sessions</div>
-      <div style={{ fontSize:11, color:C.textMuted, marginBottom:14 }}>A school needs a current session before you can add classes or enter results. Creating a session automatically sets up its three terms.</div>
+      <div style={{ fontSize:11, color:C.textMuted, marginBottom:14 }}>A school needs a current session before you can add classes or enter results. Creating a session automatically sets up its three terms. The <strong>current term</strong> you set here is what Grades, Broadsheet, Report Cards and other pages default to.</div>
 
       {/* Existing sessions */}
       <div style={{ border:`1px solid ${C.border}`, borderRadius:9, overflow:"hidden", marginBottom:16 }}>
@@ -5642,12 +5649,26 @@ const AcademicSessions = () => {
         ) : years.length === 0 ? (
           <div style={{ padding:"18px", textAlign:"center", fontSize:12, color:C.textMuted }}>No academic session yet — create one below.</div>
         ) : years.map(y => (
-          <div key={y.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, padding:"10px 12px", borderTop:`1px solid ${C.border}` }}>
-            <div>
-              <div style={{ fontSize:13, fontWeight:700 }}>{y.name} {Number(y.is_current)===1 && <Badge color="green" size="sm">Current</Badge>}</div>
-              <div style={{ fontSize:10, color:C.textMuted, marginTop:2 }}>{y.start_date} → {y.end_date} · {(y.terms||[]).length} terms{(y.terms||[]).length ? ` (${y.terms.map(t=>t.name).join(", ")})` : ""}</div>
+          <div key={y.id} style={{ padding:"10px 12px", borderTop:`1px solid ${C.border}` }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+              <div style={{ fontSize:13, fontWeight:700 }}>{y.name} {Number(y.is_current)===1 && <Badge color="green" size="sm">Current session</Badge>}</div>
+              {Number(y.is_current)!==1 && <Btn size="sm" variant="secondary" onClick={()=>makeCurrent(y)}>Set current session</Btn>}
             </div>
-            {Number(y.is_current)!==1 && <Btn size="sm" variant="secondary" onClick={()=>makeCurrent(y)}>Set current</Btn>}
+            <div style={{ fontSize:10, color:C.textMuted, marginTop:2 }}>{y.start_date} → {y.end_date}</div>
+            {(y.terms||[]).length>0 && (
+              <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:8 }}>
+                {y.terms.map(t => {
+                  const cur = Number(t.is_current)===1;
+                  return (
+                    <div key={t.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 10px", borderRadius:8, border:`1px solid ${cur?C.accent:C.border}`, background:cur?C.accentLight:"#fff" }}>
+                      <span style={{ fontSize:12, fontWeight:600, color:cur?C.accentDark:C.textMid }}>{t.name}</span>
+                      {cur ? <Badge color="green" size="sm">Current term</Badge>
+                           : <button onClick={()=>makeCurrentTerm(t)} style={{ fontSize:10, fontWeight:700, color:C.accent, background:"none", border:"none", cursor:"pointer", padding:0 }}>Set current</button>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ))}
       </div>

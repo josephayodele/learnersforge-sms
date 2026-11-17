@@ -2361,6 +2361,32 @@ class AcademicController {
         DB::run('UPDATE academic_years SET is_current=1 WHERE id=?', [$id]);
         respond(['is_current' => $id]);
     }
+
+    // Mark a term as the school's current term. Exactly one term is current at a
+    // time; its parent session is made current too, so the header and every page
+    // that defaults to "the current term" stay in agreement.
+    public static function setCurrentTerm(array $user, int $id): void {
+        Perm::assertAdmin($user);
+        $sid = (int)$user['school_id'];
+        $t = DB::one(
+            'SELECT t.id, t.academic_year_id FROM terms t
+             JOIN academic_years ay ON ay.id = t.academic_year_id
+             WHERE t.id=? AND ay.school_id=? AND t.deleted_at IS NULL',
+            [$id, $sid]
+        );
+        if (!$t) respond(null, 404, 'Term not found.');
+        DB::conn()->beginTransaction();
+        try {
+            // Parent session becomes current too.
+            DB::run('UPDATE academic_years SET is_current=0 WHERE school_id=?', [$sid]);
+            DB::run('UPDATE academic_years SET is_current=1 WHERE id=?', [(int)$t['academic_year_id']]);
+            // Exactly one current term across the whole school.
+            DB::run('UPDATE terms SET is_current=0 WHERE academic_year_id IN (SELECT id FROM academic_years WHERE school_id=?)', [$sid]);
+            DB::run('UPDATE terms SET is_current=1 WHERE id=?', [$id]);
+            DB::conn()->commit();
+        } catch (Throwable $ex) { DB::conn()->rollBack(); throw $ex; }
+        respond(['is_current' => $id]);
+    }
 }
 
 // ─── AIController ─────────────────────────────────────────────────────────────

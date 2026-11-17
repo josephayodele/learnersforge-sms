@@ -653,6 +653,9 @@ try {
             []
         ));
 
+    } elseif ($path === '/api/v1/terms' && $id && $method === 'PUT') {
+        AcademicController::setCurrentTerm(authGuard(), $id);
+
     // ── Academic sessions (years) + terms ──────────────────────────────────────
     } elseif ($path === '/api/v1/academic-years' && !$id && $method === 'GET') {
         AcademicController::listYears(authGuard());
