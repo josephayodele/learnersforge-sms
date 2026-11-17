@@ -2331,7 +2331,11 @@ class AcademicController {
 
         DB::conn()->beginTransaction();
         try {
-            if ($makeCurrent) DB::run('UPDATE academic_years SET is_current=0 WHERE school_id=?', [$sid]);
+            if ($makeCurrent) {
+                DB::run('UPDATE academic_years SET is_current=0 WHERE school_id=?', [$sid]);
+                // Only one current term across the school — the new session's first term takes over below.
+                DB::run('UPDATE terms SET is_current=0 WHERE academic_year_id IN (SELECT id FROM academic_years WHERE school_id=?)', [$sid]);
+            }
             $yearId = DB::exec('INSERT INTO academic_years (school_id,name,start_date,end_date,is_current) VALUES (?,?,?,?,?)',
                 [$sid, $name, $start, $end, $makeCurrent ? 1 : 0]);
 
@@ -2359,6 +2363,11 @@ class AcademicController {
             respond(null, 404, 'Session not found.');
         DB::run('UPDATE academic_years SET is_current=0 WHERE school_id=?', [$sid]);
         DB::run('UPDATE academic_years SET is_current=1 WHERE id=?', [$id]);
+        // Keep the current term consistent with the current session: clear every
+        // term, then make this session's earliest term current.
+        DB::run('UPDATE terms SET is_current=0 WHERE academic_year_id IN (SELECT id FROM academic_years WHERE school_id=?)', [$sid]);
+        $firstTerm = DB::one('SELECT id FROM terms WHERE academic_year_id=? AND deleted_at IS NULL ORDER BY id LIMIT 1', [$id]);
+        if ($firstTerm) DB::run('UPDATE terms SET is_current=1 WHERE id=?', [(int)$firstTerm['id']]);
         respond(['is_current' => $id]);
     }
 

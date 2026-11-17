@@ -2507,7 +2507,7 @@ const Grades = () => {
       if (cancelled) return;
       const list = arrOf(res);
       setTermList(list);
-      if (list.length) { const last = String(list[list.length - 1].id); setRcTerm(last); setEntTerm(last); }
+      if (list.length) { const def = String((list.find(t=>Number(t.is_current)===1) || list[list.length - 1]).id); setRcTerm(def); setEntTerm(def); }
       setCumTermIds(list.map(t => t.id));
     }).catch(() => {});
     getClasses().then(res => { if (!cancelled) { const l = arrOf(res); setClassList(l); if (l[0]) setEntClass(String(l[0].id)); } }).catch(() => {});
