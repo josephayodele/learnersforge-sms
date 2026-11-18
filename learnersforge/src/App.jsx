@@ -5708,7 +5708,7 @@ const AcademicSessions = () => {
 };
 
 const Settings = () => {
-  const empty = { name:"", code:"", address:"", phone:"", email:"", motto:"", term_system:"term", logo_url:"", cgpa_enabled:0, cgpa_scale:5, cgpa_bands:[] };
+  const empty = { name:"", code:"", address:"", phone:"", email:"", motto:"", term_system:"term", logo_url:"", cgpa_enabled:0, cgpa_scale:5, cgpa_bands:[], cgpa_classes:[] };
   const [form,    setForm]    = useState(empty);
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
@@ -5718,7 +5718,9 @@ const Settings = () => {
   // CGPA / grade-point grading helpers.
   const bandInput = { padding:"6px 9px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, width:"100%", background:C.surface, color:C.text, outline:"none" };
   const defaultBandsFor = scale => { const s=Number(scale)||5; const step=s>=5?1:s/5; const p=i=>Math.max(0,Math.round((s-i*step)*100)/100); const mins=[70,60,50,45,40,0]; return ["A","B","C","D","E","F"].map((g,i)=>({ grade:g, min:mins[i], point:i===5?0:p(i) })); };
-  const normSettings = d => { let bands=[]; try { bands = Array.isArray(d?.cgpa_bands) ? d.cgpa_bands : (d?.cgpa_bands ? JSON.parse(d.cgpa_bands) : []); } catch { bands=[]; } return { ...empty, ...(d||{}), cgpa_enabled:Number(d?.cgpa_enabled)||0, cgpa_scale:Number(d?.cgpa_scale)||5, cgpa_bands:bands }; };
+  const normSettings = d => { let bands=[]; try { bands = Array.isArray(d?.cgpa_bands) ? d.cgpa_bands : (d?.cgpa_bands ? JSON.parse(d.cgpa_bands) : []); } catch { bands=[]; } const classes = Array.isArray(d?.cgpa_classes) ? d.cgpa_classes.map(c=>({ id:Number(c.id), name:c.name, cgpa_enabled:Number(c.cgpa_enabled)||0 })) : []; return { ...empty, ...(d||{}), cgpa_enabled:Number(d?.cgpa_enabled)||0, cgpa_scale:Number(d?.cgpa_scale)||5, cgpa_bands:bands, cgpa_classes:classes }; };
+  const toggleClassCgpa = (id,on) => setForm(p => ({ ...p, cgpa_classes:(p.cgpa_classes||[]).map(c=>c.id===id?{ ...c, cgpa_enabled:on?1:0 }:c) }));
+  const setAllClassesCgpa = on => setForm(p => ({ ...p, cgpa_classes:(p.cgpa_classes||[]).map(c=>({ ...c, cgpa_enabled:on?1:0 })) }));
   const setBand = (i,k,v) => setForm(p => { const b=[...(p.cgpa_bands||[])]; b[i]={ ...b[i], [k]: k==="grade"?v:(v===""?"":Number(v)) }; return { ...p, cgpa_bands:b }; });
   const addBand = () => setForm(p => ({ ...p, cgpa_bands:[...(p.cgpa_bands||[]), { grade:"", min:0, point:0 }] }));
   const removeBand = i => setForm(p => ({ ...p, cgpa_bands:(p.cgpa_bands||[]).filter((_,j)=>j!==i) }));
@@ -5747,7 +5749,8 @@ const Settings = () => {
   const save = async () => {
     setSaving(true); setError(null); setSaved(false);
     try {
-      const res = await updateSchoolSettings(form);
+      const payload = { ...form, cgpa_classes:(form.cgpa_classes||[]).filter(c=>Number(c.cgpa_enabled)).map(c=>c.id) };
+      const res = await updateSchoolSettings(payload);
       setForm(normSettings(res?.data ?? form));
       window.dispatchEvent(new Event('lf-school-updated'));   // refresh sidebar/topbar name + logo
       setSaved(true); setTimeout(() => setSaved(false), 2500);
@@ -5804,7 +5807,7 @@ const Settings = () => {
       </Card>
       <Card>
         <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>🎓 CGPA / Grade-Point Grading</div>
-        <div style={{ fontSize:11, color:C.textMuted, marginBottom:14 }}>Grade results on a points scale you choose. When on, report cards and the broadsheet show each subject's grade point and the student's term GPA (a simple average of the subject points).</div>
+        <div style={{ fontSize:11, color:C.textMuted, marginBottom:14 }}>Grade results on a points scale you choose, then pick which classes use it. For a ticked class, its report cards and broadsheet show each subject's grade point and the student's term GPA (a simple average of the subject points).</div>
         <label style={{ display:"flex", alignItems:"center", gap:9, fontSize:13, color:C.textMid, cursor:"pointer" }}>
           <input type="checkbox" checked={!!Number(form.cgpa_enabled)} onChange={e=>toggleCgpa(e.target.checked)} style={{ width:16, height:16 }}/>
           Enable CGPA grade-point grading
@@ -5835,6 +5838,32 @@ const Settings = () => {
               </div>
             </div>
             <div style={{ fontSize:11, color:C.textMuted, marginTop:9 }}>A score at or above a band's <b>Min %</b> earns its grade point (bands are read highest-first). Points should not exceed the scale.</div>
+
+            {/* Per-class activation — only ticked classes show the GPA on results. */}
+            <div style={{ marginTop:20, paddingTop:16, borderTop:`1px solid ${C.border}` }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8, marginBottom:4 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:C.textMid }}>Apply to classes</div>
+                {(form.cgpa_classes||[]).length>0 && (
+                  <div style={{ display:"flex", gap:6 }}>
+                    <Btn size="sm" variant="ghost" onClick={()=>setAllClassesCgpa(true)}>Select all</Btn>
+                    <Btn size="sm" variant="ghost" onClick={()=>setAllClassesCgpa(false)}>Clear</Btn>
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize:11, color:C.textMuted, marginBottom:10 }}>Only the classes you tick here will use grade-point grading on their report cards and broadsheet.</div>
+              {(form.cgpa_classes||[]).length===0 ? (
+                <div style={{ padding:"14px", textAlign:"center", fontSize:12, color:C.textMuted, border:`1px dashed ${C.border}`, borderRadius:9 }}>No classes yet — create classes first, then choose which use CGPA.</div>
+              ) : (
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:8 }}>
+                  {(form.cgpa_classes||[]).map(c=>(
+                    <label key={c.id} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12.5, color:C.textMid, cursor:"pointer", padding:"8px 11px", border:`1px solid ${Number(c.cgpa_enabled)?C.accent:C.border}`, borderRadius:8, background:Number(c.cgpa_enabled)?C.accentLight:C.surface }}>
+                      <input type="checkbox" checked={!!Number(c.cgpa_enabled)} onChange={e=>toggleClassCgpa(c.id,e.target.checked)} style={{ width:15, height:15 }}/>
+                      <span style={{ fontWeight:Number(c.cgpa_enabled)?700:400 }}>{c.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
         <div style={{ marginTop:16, display:"flex", gap:10, alignItems:"center" }}>

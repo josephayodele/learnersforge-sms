@@ -852,11 +852,15 @@ class GradeController {
         } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
     }
 
-    // ── CGPA / grade-point grading (opt-in per school) ──────────────────────────
-    // The school's config: whether it's on, the scale (max grade point) and the
-    // score→point bands the admin set in Settings. Falls back to a standard
-    // 5-point-style mapping scaled to whatever maximum they chose.
-    private static function cgpaConfig(int $schoolId): array {
+    // ── CGPA / grade-point grading (opt-in per school, activated per class) ──────
+    // The school's config: whether it's on at all, the scale (max grade point) and
+    // the score→point bands the admin set in Settings. Falls back to a standard
+    // 5-point-style mapping scaled to whatever maximum they chose. Activation is
+    // per class (classes.cgpa_enabled, migration 017): a class shows the GPA only
+    // when the school master switch AND that class's flag are both on. Pass the
+    // class id when building a report card / broadsheet; omit it (0) for a
+    // whole-school check (master switch only).
+    private static function cgpaConfig(int $schoolId, int $classId = 0): array {
         // Tolerate a DB where migration 016 hasn't run yet: grading just stays off.
         try { $s = DB::one('SELECT cgpa_enabled, cgpa_scale, cgpa_bands FROM schools WHERE id=?', [$schoolId]) ?: []; }
         catch (\Throwable $e) { $s = []; }
@@ -870,7 +874,17 @@ class GradeController {
         }
         if (!$bands) $bands = self::defaultBands($scale);
         usort($bands, fn($a, $b) => $b['min'] <=> $a['min']);   // check highest band first
-        return ['enabled' => ((int)($s['cgpa_enabled'] ?? 0) === 1), 'scale' => $scale, 'bands' => $bands];
+        $master = ((int)($s['cgpa_enabled'] ?? 0) === 1);
+        // Per-class activation. If migration 017 hasn't run yet (column missing),
+        // fall back to the old whole-school behaviour so nothing breaks.
+        $classOn = true;
+        if ($master && $classId > 0) {
+            try {
+                $c = DB::one('SELECT cgpa_enabled FROM classes WHERE id=?', [$classId]);
+                $classOn = ($c !== null) ? ((int)($c['cgpa_enabled'] ?? 0) === 1) : false;
+            } catch (\Throwable $e) { $classOn = true; }   // pre-017: master switch governs
+        }
+        return ['enabled' => ($master && $classOn), 'scale' => $scale, 'bands' => $bands];
     }
     private static function defaultBands(float $scale): array {
         $step = $scale >= 5 ? 1.0 : $scale / 5.0;
@@ -975,7 +989,7 @@ class GradeController {
 
         $school = DB::one('SELECT name,address,phone,email,logo_url,motto FROM schools WHERE id=?',[(int)$user['school_id']]);
         $term   = DB::one('SELECT t.name,t.start_date,t.end_date,ay.name AS year FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id WHERE t.id=?',[$termId]);
-        $cfg    = self::cgpaConfig((int)$user['school_id']);   // CGPA grading (opt-in)
+        $cfg    = self::cgpaConfig((int)$user['school_id'], $classId);   // CGPA grading (opt-in, per class)
 
         // Which CA components count as the "exam" portion (is_exam flag, or a label
         // containing "exam" as a fallback for components created before the flag).
@@ -1142,7 +1156,7 @@ class GradeController {
 
         $class = DB::one('SELECT name FROM classes WHERE id=? AND school_id=?', [$classId, (int)$user['school_id']]);
         if (!$class) respond(null, 404, 'Class not found');
-        $cfg    = self::cgpaConfig((int)$user['school_id']);   // CGPA grading (opt-in)
+        $cfg    = self::cgpaConfig((int)$user['school_id'], $classId);   // CGPA grading (opt-in, per class)
         $term   = DB::one('SELECT t.name, ay.name AS year FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id WHERE t.id=?', [$termId]);
         $school = DB::one('SELECT name FROM schools WHERE id=?', [(int)$user['school_id']]);
 
@@ -2337,6 +2351,14 @@ class SettingsController {
             $r = DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system FROM schools WHERE id=?',[$sid]) ?: [];
             $r['cgpa_enabled'] = 0; $r['cgpa_scale'] = 5.0; $r['cgpa_bands'] = null;
         }
+        // The class list + each class's CGPA flag so the Settings checklist can show
+        // which classes use grade-point grading. Tolerates pre-017 DBs (no column).
+        try { $r['cgpa_classes'] = DB::query('SELECT id,name,COALESCE(cgpa_enabled,0) AS cgpa_enabled FROM classes WHERE school_id=? AND deleted_at IS NULL ORDER BY name',[$sid]); }
+        catch (\Throwable $e) {
+            $cls = DB::query('SELECT id,name FROM classes WHERE school_id=? AND deleted_at IS NULL ORDER BY name',[$sid]);
+            foreach ($cls as &$c) { $c['cgpa_enabled'] = 0; } unset($c);
+            $r['cgpa_classes'] = $cls;
+        }
         respond($r);
     }
 
@@ -2364,6 +2386,19 @@ class SettingsController {
         } catch (\Throwable $e) {
             // cgpa_* columns not migrated yet — still save everything else.
             DB::run("UPDATE schools SET $baseSet WHERE id=?", array_merge($base, [$sid]));
+        }
+        // Per-class CGPA activation: the body carries cgpa_classes = the ids of the
+        // classes that should use grade-point grading. Everything else in the school
+        // is turned off. Only applied when the key is present; tolerates pre-017 DBs.
+        if (array_key_exists('cgpa_classes', $b) && is_array($b['cgpa_classes'])) {
+            try {
+                $ids = array_values(array_unique(array_filter(array_map('intval', $b['cgpa_classes']), fn($x) => $x > 0)));
+                DB::run('UPDATE classes SET cgpa_enabled=0 WHERE school_id=?', [$sid]);
+                if ($ids) {
+                    $ph = implode(',', array_fill(0, count($ids), '?'));
+                    DB::run("UPDATE classes SET cgpa_enabled=1 WHERE school_id=? AND id IN ($ph)", array_merge([$sid], $ids));
+                }
+            } catch (\Throwable $e) { /* classes.cgpa_enabled not migrated yet */ }
         }
         self::getSchool($user);   // respond with the fresh (migration-tolerant) row
     }
