@@ -1652,6 +1652,7 @@ const rcTdC = { ...rcTd, textAlign:"center" };
 // container so single and bulk printing share exactly the same layout.
 const ReportSheet = ({ rc }) => {
   if (!rc) return null;
+  const cg = !!rc.cgpa_enabled; const cgScale = Number(rc.cgpa_scale) || 5;   // CGPA grading on?
   const hasAttendance = (rc.attendance?.total_days > 0) || (rc.attendance?.present > 0) || (rc.attendance?.absent > 0);
   // Print scale shrinks as the sheet gets taller (more subjects/traits) so it
   // always lands on ONE page; .report-page below clips as a last-resort guard.
@@ -1701,6 +1702,7 @@ const ReportSheet = ({ rc }) => {
             <th style={rcThC}>Exam<br/><span style={{ fontWeight:400 }}>(60)</span></th>
             <th style={rcThC}>Total<br/><span style={{ fontWeight:400 }}>(100)</span></th>
             <th style={rcThC}>Grade</th>
+            {cg && <th style={rcThC}>Point</th>}
             <th style={rcThC}>Position</th>
             <th style={rcThC}>Highest</th>
             <th style={rcThC}>Lowest</th>
@@ -1714,18 +1716,19 @@ const ReportSheet = ({ rc }) => {
               <td style={rcTdC}>{s.exam}</td>
               <td style={{ ...rcTdC, fontWeight:700 }}>{s.total}</td>
               <td style={rcTdC}><Badge color={letterColor(s.grade)} size="sm">{s.grade}</Badge></td>
+              {cg && <td style={{ ...rcTdC, fontWeight:700 }}>{s.point != null ? Number(s.point).toFixed(2) : "—"}</td>}
               <td style={rcTdC}>{ordinal(s.position)}</td>
               <td style={{ ...rcTdC, background:C.accentLight }}>{s.highest}</td>
               <td style={{ ...rcTdC, background:C.coralLight }}>{s.lowest}</td>
             </tr>
-          )) : <tr><td colSpan={8} style={{ ...rcTdC, color:C.textMuted, padding:"16px" }}>No grades recorded for this term.</td></tr>}
+          )) : <tr><td colSpan={cg?9:8} style={{ ...rcTdC, color:C.textMuted, padding:"16px" }}>No grades recorded for this term.</td></tr>}
         </tbody>
       </table>
       {/* Overall summary — single horizontal table */}
       <table style={{ width:"100%", borderCollapse:"collapse", marginBottom:14 }}>
         <thead>
           <tr style={{ background:"#F8FAFC" }}>
-            {["Overall Marks","Percentage","Grade","Position in Class","Class Highest","Class Lowest"]
+            {["Overall Marks","Percentage","Grade",...(cg?["GPA"]:[]),"Position in Class","Class Highest","Class Lowest"]
               .map(h => <th key={h} style={{ ...rcThC, fontSize:9 }}>{h}</th>)}
           </tr>
         </thead>
@@ -1734,6 +1737,7 @@ const ReportSheet = ({ rc }) => {
             <td style={{ ...rcTdC, fontWeight:700 }}>{rc.overall?.total} / {rc.overall?.max}</td>
             <td style={{ ...rcTdC, fontWeight:700 }}>{rc.overall?.percentage}%</td>
             <td style={rcTdC}><Badge color={letterColor(rc.overall?.grade)} size="sm">{rc.overall?.grade}</Badge></td>
+            {cg && <td style={{ ...rcTdC, fontWeight:800, color:C.accentDark }}>{rc.overall?.gpa != null ? Number(rc.overall.gpa).toFixed(2) : "—"} / {cgScale.toFixed(1)}</td>}
             <td style={{ ...rcTdC, fontWeight:700 }}>{ordinal(rc.overall?.position)} of {rc.class_size}</td>
             <td style={{ ...rcTdC, background:C.accentLight }}>{rc.overall?.class_highest}%</td>
             <td style={{ ...rcTdC, background:C.coralLight }}>{rc.overall?.class_lowest}%</td>
@@ -1907,23 +1911,26 @@ const BroadsheetTab = ({ flash, classOptions }) => {
       const mod = await import("xlsx");
       const XLSX = mod?.utils ? mod : (mod?.default || mod);
       if(!XLSX?.utils) throw new Error("Spreadsheet export failed to load. Please retry.");
+      const cg = !!data?.cgpa?.enabled;
       const h1=["Adm No","Student","Father/Guardian"], h2=["","",""];
       subjects.forEach(s=>{ h1.push(s.name,""); h2.push("CA","Exam"); });
       h1.push("Total","%","Grade","Position"); h2.push("","","","");
+      if(cg){ h1.push("GPA"); h2.push(""); }
       const aoa=[h1,h2];
       rows.forEach(r=>{
         const row=[r.admission, r.name, r.guardian||""];
         subjects.forEach(s=>{ const c=r.subjects?.[s.id]||{}; row.push(c.ca ?? "", c.exam ?? ""); });
         row.push(r.total, r.percentage, r.grade, r.position);
+        if(cg) row.push(r.gpa ?? "");
         aoa.push(row);
       });
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       const merges=[{s:{r:0,c:0},e:{r:1,c:0}},{s:{r:0,c:1},e:{r:1,c:1}},{s:{r:0,c:2},e:{r:1,c:2}}];
       subjects.forEach((s,i)=>{ const c=3+i*2; merges.push({s:{r:0,c},e:{r:0,c:c+1}}); });
       const tail=3+subjects.length*2;
-      for(let k=0;k<4;k++) merges.push({s:{r:0,c:tail+k},e:{r:1,c:tail+k}});
+      for(let k=0;k<(cg?5:4);k++) merges.push({s:{r:0,c:tail+k},e:{r:1,c:tail+k}});
       ws["!merges"]=merges;
-      ws["!cols"]=[{wch:12},{wch:24},{wch:22},...subjects.flatMap(()=>[{wch:6},{wch:6}]),{wch:8},{wch:7},{wch:7},{wch:9}];
+      ws["!cols"]=[{wch:12},{wch:24},{wch:22},...subjects.flatMap(()=>[{wch:6},{wch:6}]),{wch:8},{wch:7},{wch:7},{wch:9},...(cg?[{wch:7}]:[])];
       const wb=XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb,ws,"Broadsheet");
       const clean=s=>String(s||"").replace(/[^\w-]+/g,"_");
@@ -1974,6 +1981,7 @@ const BroadsheetTab = ({ flash, classOptions }) => {
                 <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4, borderLeft:`2px solid ${C.border}` }}>Total</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4 }}>%</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4 }}>Grade</th>
+                {data.cgpa?.enabled && <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4 }}>GPA{data.cgpa?.scale?` /${Number(data.cgpa.scale).toFixed(1)}`:""}</th>}
                 <th rowSpan={2} style={{ ...thBase, textAlign:"center", position:"sticky", top:0, zIndex:4 }}>Pos</th>
               </tr>
               <tr>
@@ -2000,6 +2008,7 @@ const BroadsheetTab = ({ flash, classOptions }) => {
                   <td style={{ padding:"7px 9px", textAlign:"center", fontWeight:700, borderLeft:`2px solid ${C.border}` }}>{r.total}</td>
                   <td style={{ padding:"7px 9px", textAlign:"center" }}>{r.percentage}%</td>
                   <td style={{ padding:"7px 9px", textAlign:"center", fontWeight:700, color:gradeColorFor(r.grade) }}>{r.grade}</td>
+                  {data.cgpa?.enabled && <td style={{ padding:"7px 9px", textAlign:"center", fontWeight:800, color:C.accentDark }}>{r.gpa ?? "—"}</td>}
                   <td style={{ padding:"7px 9px", textAlign:"center", fontWeight:700 }}>{r.position}</td>
                 </tr>
               ))}
@@ -5699,18 +5708,27 @@ const AcademicSessions = () => {
 };
 
 const Settings = () => {
-  const empty = { name:"", code:"", address:"", phone:"", email:"", motto:"", term_system:"term", logo_url:"" };
+  const empty = { name:"", code:"", address:"", phone:"", email:"", motto:"", term_system:"term", logo_url:"", cgpa_enabled:0, cgpa_scale:5, cgpa_bands:[] };
   const [form,    setForm]    = useState(empty);
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [saved,   setSaved]   = useState(false);
   const [error,   setError]   = useState(null);
   const set = k => v => setForm(p => ({ ...p, [k]: v }));
+  // CGPA / grade-point grading helpers.
+  const bandInput = { padding:"6px 9px", borderRadius:7, border:`1px solid ${C.border}`, fontSize:13, width:"100%", background:C.surface, color:C.text, outline:"none" };
+  const defaultBandsFor = scale => { const s=Number(scale)||5; const step=s>=5?1:s/5; const p=i=>Math.max(0,Math.round((s-i*step)*100)/100); const mins=[70,60,50,45,40,0]; return ["A","B","C","D","E","F"].map((g,i)=>({ grade:g, min:mins[i], point:i===5?0:p(i) })); };
+  const normSettings = d => { let bands=[]; try { bands = Array.isArray(d?.cgpa_bands) ? d.cgpa_bands : (d?.cgpa_bands ? JSON.parse(d.cgpa_bands) : []); } catch { bands=[]; } return { ...empty, ...(d||{}), cgpa_enabled:Number(d?.cgpa_enabled)||0, cgpa_scale:Number(d?.cgpa_scale)||5, cgpa_bands:bands }; };
+  const setBand = (i,k,v) => setForm(p => { const b=[...(p.cgpa_bands||[])]; b[i]={ ...b[i], [k]: k==="grade"?v:(v===""?"":Number(v)) }; return { ...p, cgpa_bands:b }; });
+  const addBand = () => setForm(p => ({ ...p, cgpa_bands:[...(p.cgpa_bands||[]), { grade:"", min:0, point:0 }] }));
+  const removeBand = i => setForm(p => ({ ...p, cgpa_bands:(p.cgpa_bands||[]).filter((_,j)=>j!==i) }));
+  const applyScale = v => setForm(p => ({ ...p, cgpa_scale:Number(v), cgpa_bands:(p.cgpa_bands&&p.cgpa_bands.length)?p.cgpa_bands:defaultBandsFor(v) }));
+  const toggleCgpa = on => setForm(p => ({ ...p, cgpa_enabled:on?1:0, cgpa_bands:(on && !(p.cgpa_bands&&p.cgpa_bands.length))?defaultBandsFor(p.cgpa_scale||5):p.cgpa_bands }));
 
   useEffect(() => {
     let cancelled = false;
     getSchoolSettings()
-      .then(res => { if (!cancelled) setForm({ ...empty, ...(res?.data ?? {}) }); })
+      .then(res => { if (!cancelled) setForm(normSettings(res?.data ?? {})); })
       .catch(() => { if (!cancelled) setError("Could not load school settings."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -5730,7 +5748,7 @@ const Settings = () => {
     setSaving(true); setError(null); setSaved(false);
     try {
       const res = await updateSchoolSettings(form);
-      setForm({ ...empty, ...(res?.data ?? form) });
+      setForm(normSettings(res?.data ?? form));
       window.dispatchEvent(new Event('lf-school-updated'));   // refresh sidebar/topbar name + logo
       setSaved(true); setTimeout(() => setSaved(false), 2500);
     } catch (err) {
@@ -5781,6 +5799,46 @@ const Settings = () => {
         <div style={{ marginTop:16, display:"flex", gap:10, alignItems:"center" }}>
           <Btn onClick={save} variant="primary" disabled={loading || saving}>{saving ? "Saving…" : "💾 Save Changes"}</Btn>
           {loading && <span style={{ fontSize:12, color:C.textMuted }}>Loading…</span>}
+          {saved && <span style={{ fontSize:12, color:C.accentDark, fontWeight:600 }}>✅ Saved!</span>}
+        </div>
+      </Card>
+      <Card>
+        <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>🎓 CGPA / Grade-Point Grading</div>
+        <div style={{ fontSize:11, color:C.textMuted, marginBottom:14 }}>Grade results on a points scale you choose. When on, report cards and the broadsheet show each subject's grade point and the student's term GPA (a simple average of the subject points).</div>
+        <label style={{ display:"flex", alignItems:"center", gap:9, fontSize:13, color:C.textMid, cursor:"pointer" }}>
+          <input type="checkbox" checked={!!Number(form.cgpa_enabled)} onChange={e=>toggleCgpa(e.target.checked)} style={{ width:16, height:16 }}/>
+          Enable CGPA grade-point grading
+        </label>
+        {!!Number(form.cgpa_enabled) && (
+          <div style={{ marginTop:16 }}>
+            <div style={{ display:"flex", gap:12, alignItems:"flex-end", flexWrap:"wrap" }}>
+              <Sel label="Scale (max grade point)" value={String(form.cgpa_scale)} onChange={applyScale}
+                   options={[{value:"4",label:"4.0"},{value:"5",label:"5.0"},{value:"7",label:"7.0"}]} style={{ width:170 }}/>
+              <Btn size="sm" variant="secondary" onClick={()=>setForm(p=>({ ...p, cgpa_bands:defaultBandsFor(p.cgpa_scale) }))}>↺ Reset bands to {Number(form.cgpa_scale).toFixed(1)} defaults</Btn>
+            </div>
+            <div style={{ marginTop:14, border:`1px solid ${C.border}`, borderRadius:9, overflow:"hidden" }}>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 44px", background:"#F8FAFC", padding:"8px 11px", fontSize:10, fontWeight:700, color:C.textMuted, textTransform:"uppercase", letterSpacing:".04em" }}>
+                <div>Grade</div><div>Min %</div><div>Grade point</div><div></div>
+              </div>
+              {(form.cgpa_bands||[]).length===0 ? (
+                <div style={{ padding:"16px", textAlign:"center", fontSize:12, color:C.textMuted }}>No bands yet — add one or reset to defaults.</div>
+              ) : (form.cgpa_bands||[]).map((b,i)=>(
+                <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 44px", gap:8, padding:"8px 11px", borderTop:`1px solid ${C.border}`, alignItems:"center" }}>
+                  <input value={b.grade ?? ""} onChange={e=>setBand(i,"grade",e.target.value)} placeholder="A" style={bandInput}/>
+                  <input type="number" value={b.min ?? ""} onChange={e=>setBand(i,"min",e.target.value)} placeholder="70" style={bandInput}/>
+                  <input type="number" step="0.01" value={b.point ?? ""} onChange={e=>setBand(i,"point",e.target.value)} placeholder="5" style={bandInput}/>
+                  <button onClick={()=>removeBand(i)} title="Remove band" style={{ background:"none", border:"none", color:C.coral, fontSize:15, cursor:"pointer" }}>✕</button>
+                </div>
+              ))}
+              <div style={{ padding:"9px 11px", borderTop:`1px solid ${C.border}` }}>
+                <Btn size="sm" variant="ghost" onClick={addBand}>+ Add band</Btn>
+              </div>
+            </div>
+            <div style={{ fontSize:11, color:C.textMuted, marginTop:9 }}>A score at or above a band's <b>Min %</b> earns its grade point (bands are read highest-first). Points should not exceed the scale.</div>
+          </div>
+        )}
+        <div style={{ marginTop:16, display:"flex", gap:10, alignItems:"center" }}>
+          <Btn onClick={save} variant="primary" disabled={loading || saving}>{saving ? "Saving…" : "💾 Save Grading Settings"}</Btn>
           {saved && <span style={{ fontSize:12, color:C.accentDark, fontWeight:600 }}>✅ Saved!</span>}
         </div>
       </Card>

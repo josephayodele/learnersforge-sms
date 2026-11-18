@@ -852,6 +852,38 @@ class GradeController {
         } catch (Throwable $e) { DB::conn()->rollBack(); throw $e; }
     }
 
+    // ── CGPA / grade-point grading (opt-in per school) ──────────────────────────
+    // The school's config: whether it's on, the scale (max grade point) and the
+    // score→point bands the admin set in Settings. Falls back to a standard
+    // 5-point-style mapping scaled to whatever maximum they chose.
+    private static function cgpaConfig(int $schoolId): array {
+        $s = DB::one('SELECT cgpa_enabled, cgpa_scale, cgpa_bands FROM schools WHERE id=?', [$schoolId]) ?: [];
+        $scale = (float)($s['cgpa_scale'] ?? 5.0); if ($scale <= 0) $scale = 5.0;
+        $bands = [];
+        if (!empty($s['cgpa_bands'])) {
+            $d = json_decode((string)$s['cgpa_bands'], true);
+            if (is_array($d)) foreach ($d as $b) {
+                if (isset($b['min'], $b['point'])) $bands[] = ['grade' => (string)($b['grade'] ?? ''), 'min' => (float)$b['min'], 'point' => (float)$b['point']];
+            }
+        }
+        if (!$bands) $bands = self::defaultBands($scale);
+        usort($bands, fn($a, $b) => $b['min'] <=> $a['min']);   // check highest band first
+        return ['enabled' => ((int)($s['cgpa_enabled'] ?? 0) === 1), 'scale' => $scale, 'bands' => $bands];
+    }
+    private static function defaultBands(float $scale): array {
+        $step = $scale >= 5 ? 1.0 : $scale / 5.0;
+        $pt = fn($i) => max(0.0, round($scale - $i * $step, 2));
+        return [
+            ['grade' => 'A', 'min' => 70, 'point' => $pt(0)], ['grade' => 'B', 'min' => 60, 'point' => $pt(1)],
+            ['grade' => 'C', 'min' => 50, 'point' => $pt(2)], ['grade' => 'D', 'min' => 45, 'point' => $pt(3)],
+            ['grade' => 'E', 'min' => 40, 'point' => $pt(4)], ['grade' => 'F', 'min' => 0,  'point' => 0.0],
+        ];
+    }
+    private static function gradePointOf(float $pct, array $bands): float {
+        foreach ($bands as $b) if ($pct >= $b['min']) return (float)$b['point'];
+        return 0.0;
+    }
+
     // Letter grade from a percentage (0–100) — matches the report-card grading scale:
     // A 70–100, B 60–69, C 50–59, D 45–49, E 40–44, F 0–39.
     private static function gradeOf(float $pct): string {
@@ -941,6 +973,7 @@ class GradeController {
 
         $school = DB::one('SELECT name,address,phone,email,logo_url,motto FROM schools WHERE id=?',[(int)$user['school_id']]);
         $term   = DB::one('SELECT t.name,t.start_date,t.end_date,ay.name AS year FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id WHERE t.id=?',[$termId]);
+        $cfg    = self::cgpaConfig((int)$user['school_id']);   // CGPA grading (opt-in)
 
         // Which CA components count as the "exam" portion (is_exam flag, or a label
         // containing "exam" as a fallback for components created before the flag).
@@ -990,12 +1023,19 @@ class GradeController {
                 'exam'     => round($v['exam'], 2),
                 'total'    => round($total, 2),
                 'grade'    => self::gradeOf($total), // subject total is out of 100 ⇒ already a %
+                'point'    => $cfg['enabled'] ? round(self::gradePointOf($total, $cfg['bands']), 2) : null,
                 'position' => $position,
                 'highest'  => $all ? round(max($all), 2) : round($total, 2),
                 'lowest'   => $all ? round(min($all), 2) : round($total, 2),
             ];
         }
         usort($subjects, fn($a,$b) => strcmp($a['subject'], $b['subject']));
+        // Term GPA = simple average of the student's subject grade points.
+        $gpa = null;
+        if ($cfg['enabled'] && $subjects) {
+            $sp = 0.0; foreach ($subjects as $sj) $sp += (float)$sj['point'];
+            $gpa = round($sp / count($subjects), 2);
+        }
 
         // Overall — identical rule to the broadsheet: each student's percentage is
         // total ÷ (subjects THEY offer × 100). Non-offered subjects (0/no score) are
@@ -1018,6 +1058,7 @@ class GradeController {
             'max'           => $myOffered * 100,
             'percentage'    => round($overallPct, 2),
             'grade'         => self::gradeOf($overallPct),
+            'gpa'           => $gpa,
             'position'      => $overallPos,
             'class_highest' => round($classHigh, 2),
             'class_lowest'  => round($classLow, 2),
@@ -1084,6 +1125,8 @@ class GradeController {
             'behaviour'  => $behaviour,
             'attendance' => $attendance,
             'comments'   => $comments,
+            'cgpa_enabled' => $cfg['enabled'],
+            'cgpa_scale'   => $cfg['scale'],
         ];
     }
 
@@ -1097,6 +1140,7 @@ class GradeController {
 
         $class = DB::one('SELECT name FROM classes WHERE id=? AND school_id=?', [$classId, (int)$user['school_id']]);
         if (!$class) respond(null, 404, 'Class not found');
+        $cfg    = self::cgpaConfig((int)$user['school_id']);   // CGPA grading (opt-in)
         $term   = DB::one('SELECT t.name, ay.name AS year FROM terms t JOIN academic_years ay ON ay.id=t.academic_year_id WHERE t.id=?', [$termId]);
         $school = DB::one('SELECT name FROM schools WHERE id=?', [(int)$user['school_id']]);
 
@@ -1145,7 +1189,7 @@ class GradeController {
         // (percentage/average) and ranking entirely.
         $out = [];
         foreach ($students as $st) {
-            $sid = (int)$st['id']; $subs = []; $total = 0.0; $offered = 0;
+            $sid = (int)$st['id']; $subs = []; $total = 0.0; $offered = 0; $gpSum = 0.0;
             foreach ($subjectCols as $col) {
                 $v = $agg[$sid][$col['id']] ?? null;
                 $t = $v ? $v['ca'] + $v['exam'] : 0;
@@ -1153,9 +1197,11 @@ class GradeController {
                 $subs[$col['id']] = ['ca' => round($v['ca'], 1), 'exam' => round($v['exam'], 1), 'total' => round($t, 1)];
                 $total += $t;
                 $offered++;
+                $gpSum += self::gradePointOf((float)$t, $cfg['bands']);
             }
             $possible = $offered * 100;                       // per-student, only subjects offered
             $pct = $possible > 0 ? ($total / $possible) * 100 : 0;
+            $gpa = ($cfg['enabled'] && $offered > 0) ? round($gpSum / $offered, 2) : null;
             $out[] = [
                 'student_id'       => $sid,
                 'admission'        => $st['adm'],
@@ -1167,6 +1213,7 @@ class GradeController {
                 'total'            => round($total, 1),
                 'percentage'       => round($pct, 2),
                 'grade'            => self::gradeOf($pct),
+                'gpa'              => $gpa,
             ];
         }
 
@@ -1185,6 +1232,7 @@ class GradeController {
             'subjects'        => $subjectCols,
             'max_per_subject' => 100,
             'rows'            => $out,
+            'cgpa'            => ['enabled' => $cfg['enabled'], 'scale' => $cfg['scale']],
         ]);
     }
 
@@ -2280,22 +2328,30 @@ class AdmissionController {
 class SettingsController {
     public static function getSchool(array $user): void {
         $sid = (int)$user['school_id'];
-        respond(DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system FROM schools WHERE id=?',[$sid]));
+        respond(DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system,cgpa_enabled,cgpa_scale,cgpa_bands FROM schools WHERE id=?',[$sid]));
     }
 
     public static function updateSchool(array $user): void {
         $b   = body();
         $sid = (int)$user['school_id'];
+        // CGPA grading config (nullable so COALESCE keeps existing when omitted).
+        $cgEnabled = array_key_exists('cgpa_enabled', $b) ? (int)(!!$b['cgpa_enabled']) : null;
+        $cgScale   = (array_key_exists('cgpa_scale', $b) && $b['cgpa_scale'] !== '' && $b['cgpa_scale'] !== null) ? (float)$b['cgpa_scale'] : null;
+        $cgBands   = array_key_exists('cgpa_bands', $b)
+            ? (is_array($b['cgpa_bands']) ? json_encode(array_values($b['cgpa_bands'])) : (string)$b['cgpa_bands'])
+            : null;
         // COALESCE keeps existing values when a field is omitted; an empty string
         // is a deliberate clear (e.g. removing the logo).
         DB::run('UPDATE schools SET
                     name=COALESCE(?,name), code=COALESCE(?,code), address=COALESCE(?,address),
                     phone=COALESCE(?,phone), email=COALESCE(?,email), motto=COALESCE(?,motto),
-                    term_system=COALESCE(?,term_system), logo_url=COALESCE(?,logo_url)
+                    term_system=COALESCE(?,term_system), logo_url=COALESCE(?,logo_url),
+                    cgpa_enabled=COALESCE(?,cgpa_enabled), cgpa_scale=COALESCE(?,cgpa_scale), cgpa_bands=COALESCE(?,cgpa_bands)
                  WHERE id=?',
             [$b['name']??null,$b['code']??null,$b['address']??null,$b['phone']??null,
-             $b['email']??null,$b['motto']??null,$b['term_system']??null,$b['logo_url']??null,$sid]);
-        respond(DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system FROM schools WHERE id=?',[$sid]),200,'Settings saved');
+             $b['email']??null,$b['motto']??null,$b['term_system']??null,$b['logo_url']??null,
+             $cgEnabled,$cgScale,$cgBands,$sid]);
+        respond(DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system,cgpa_enabled,cgpa_scale,cgpa_bands FROM schools WHERE id=?',[$sid]),200,'Settings saved');
     }
 }
 
