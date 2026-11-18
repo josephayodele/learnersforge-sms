@@ -857,7 +857,9 @@ class GradeController {
     // score→point bands the admin set in Settings. Falls back to a standard
     // 5-point-style mapping scaled to whatever maximum they chose.
     private static function cgpaConfig(int $schoolId): array {
-        $s = DB::one('SELECT cgpa_enabled, cgpa_scale, cgpa_bands FROM schools WHERE id=?', [$schoolId]) ?: [];
+        // Tolerate a DB where migration 016 hasn't run yet: grading just stays off.
+        try { $s = DB::one('SELECT cgpa_enabled, cgpa_scale, cgpa_bands FROM schools WHERE id=?', [$schoolId]) ?: []; }
+        catch (\Throwable $e) { $s = []; }
         $scale = (float)($s['cgpa_scale'] ?? 5.0); if ($scale <= 0) $scale = 5.0;
         $bands = [];
         if (!empty($s['cgpa_bands'])) {
@@ -2328,7 +2330,14 @@ class AdmissionController {
 class SettingsController {
     public static function getSchool(array $user): void {
         $sid = (int)$user['school_id'];
-        respond(DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system,cgpa_enabled,cgpa_scale,cgpa_bands FROM schools WHERE id=?',[$sid]));
+        // Tolerate a DB where migration 016 (cgpa_* columns) hasn't run yet, so
+        // Settings still loads instead of 500-ing on an unknown column.
+        try { $r = DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system,cgpa_enabled,cgpa_scale,cgpa_bands FROM schools WHERE id=?',[$sid]); }
+        catch (\Throwable $e) {
+            $r = DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system FROM schools WHERE id=?',[$sid]) ?: [];
+            $r['cgpa_enabled'] = 0; $r['cgpa_scale'] = 5.0; $r['cgpa_bands'] = null;
+        }
+        respond($r);
     }
 
     public static function updateSchool(array $user): void {
@@ -2342,16 +2351,21 @@ class SettingsController {
             : null;
         // COALESCE keeps existing values when a field is omitted; an empty string
         // is a deliberate clear (e.g. removing the logo).
-        DB::run('UPDATE schools SET
-                    name=COALESCE(?,name), code=COALESCE(?,code), address=COALESCE(?,address),
+        $base = [$b['name']??null,$b['code']??null,$b['address']??null,$b['phone']??null,
+                 $b['email']??null,$b['motto']??null,$b['term_system']??null,$b['logo_url']??null];
+        $baseSet = 'name=COALESCE(?,name), code=COALESCE(?,code), address=COALESCE(?,address),
                     phone=COALESCE(?,phone), email=COALESCE(?,email), motto=COALESCE(?,motto),
-                    term_system=COALESCE(?,term_system), logo_url=COALESCE(?,logo_url),
-                    cgpa_enabled=COALESCE(?,cgpa_enabled), cgpa_scale=COALESCE(?,cgpa_scale), cgpa_bands=COALESCE(?,cgpa_bands)
-                 WHERE id=?',
-            [$b['name']??null,$b['code']??null,$b['address']??null,$b['phone']??null,
-             $b['email']??null,$b['motto']??null,$b['term_system']??null,$b['logo_url']??null,
-             $cgEnabled,$cgScale,$cgBands,$sid]);
-        respond(DB::one('SELECT id,name,code,address,phone,email,logo_url,motto,term_system,cgpa_enabled,cgpa_scale,cgpa_bands FROM schools WHERE id=?',[$sid]),200,'Settings saved');
+                    term_system=COALESCE(?,term_system), logo_url=COALESCE(?,logo_url)';
+        try {
+            DB::run("UPDATE schools SET $baseSet,
+                        cgpa_enabled=COALESCE(?,cgpa_enabled), cgpa_scale=COALESCE(?,cgpa_scale), cgpa_bands=COALESCE(?,cgpa_bands)
+                     WHERE id=?",
+                array_merge($base, [$cgEnabled, $cgScale, $cgBands, $sid]));
+        } catch (\Throwable $e) {
+            // cgpa_* columns not migrated yet — still save everything else.
+            DB::run("UPDATE schools SET $baseSet WHERE id=?", array_merge($base, [$sid]));
+        }
+        self::getSchool($user);   // respond with the fresh (migration-tolerant) row
     }
 }
 
