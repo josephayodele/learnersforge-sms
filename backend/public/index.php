@@ -573,6 +573,42 @@ try {
         );
         respond(['id' => $newId, 'name' => $clamp($name, 20)], 201, 'Class created');
 
+    } elseif ($path === '/api/v1/classes' && $id && $method === 'PUT') {
+        $u = authGuard();
+        if (!Perm::isAdmin($u)) respond(null, 403, 'Only an administrator can edit a class.');
+        $sid = (int)$u['school_id'];
+        $b = body();
+        $name = trim($b['name'] ?? '');
+        if ($name === '') respond(null, 422, 'Class name is required.');
+        $existing = DB::one('SELECT id, capacity FROM classes WHERE id=? AND school_id=? AND deleted_at IS NULL', [$id, $sid]);
+        if (!$existing) respond(null, 404, 'Class not found.');
+        // No duplicate class names (ignoring this class itself).
+        if (DB::one('SELECT id FROM classes WHERE school_id=? AND name=? AND deleted_at IS NULL AND id<>?', [$sid, $name, $id]))
+            respond(null, 409, 'A class named "' . $name . '" already exists.');
+        $cap = (array_key_exists('capacity', $b) && $b['capacity'] !== '') ? (int)$b['capacity'] : (int)($existing['capacity'] ?? 40);
+        DB::run('UPDATE classes SET name=?, capacity=? WHERE id=? AND school_id=?', [mb_substr($name, 0, 20), $cap, $id, $sid]);
+        respond(['id' => $id, 'name' => mb_substr($name, 0, 20)], 200, 'Class updated');
+
+    } elseif ($path === '/api/v1/classes' && $id && $method === 'DELETE') {
+        $u = authGuard();
+        if (!Perm::isAdmin($u)) respond(null, 403, 'Only an administrator can delete a class.');
+        $sid = (int)$u['school_id'];
+        if (!DB::one('SELECT id FROM classes WHERE id=? AND school_id=? AND deleted_at IS NULL', [$id, $sid]))
+            respond(null, 404, 'Class not found.');
+        $count = (int)(DB::one('SELECT COUNT(*) c FROM students WHERE class_id=? AND deleted_at IS NULL', [$id])['c'] ?? 0);
+        $reassignTo = (int)($_GET['reassign_to'] ?? 0);
+        // Students still in the class → block (409) so the UI can prompt to reassign.
+        if ($count > 0 && !$reassignTo)
+            respond(['students' => $count], 409, $count . ' student' . ($count === 1 ? ' is' : 's are') . ' still assigned to this class. Reassign them to another class before deleting it.');
+        if ($count > 0 && $reassignTo) {
+            if ($reassignTo === $id) respond(null, 422, 'Choose a different class to move the students into.');
+            if (!DB::one('SELECT id FROM classes WHERE id=? AND school_id=? AND deleted_at IS NULL', [$reassignTo, $sid]))
+                respond(null, 422, 'The class to move students into was not found.');
+            DB::run('UPDATE students SET class_id=? WHERE class_id=?', [$reassignTo, $id]);
+        }
+        DB::run('UPDATE classes SET deleted_at=NOW() WHERE id=? AND school_id=?', [$id, $sid]);
+        respond(['deleted' => true, 'moved' => ($count && $reassignTo) ? $count : 0], 200, 'Class deleted');
+
     } elseif ($path === '/api/v1/subjects' && !$id && $method === 'GET') {
         respond(DB::query(
             'SELECT * FROM subjects WHERE school_id = ? AND deleted_at IS NULL ORDER BY name',

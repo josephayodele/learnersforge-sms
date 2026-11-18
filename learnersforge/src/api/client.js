@@ -247,6 +247,8 @@ export const updateSchoolSettings = data => api.put('/settings/school', data);
 // ── Utilities ─────────────────────────────────────────────────────────────────
 export const getClasses  = () => api.get('/classes');
 export const createClass = data => api.post('/classes', data);
+export const updateClass = (id, data) => api.put(`/classes/${id}`, data);
+export const deleteClass = (id, reassign_to) => api.delete(`/classes/${id}`, reassign_to ? { params: { reassign_to } } : undefined);
 export const getSubjects = () => api.get('/subjects');
 export const createSubject = data => api.post('/subjects', data);
 export const deleteSubject = id => api.delete(`/subjects/${id}`);

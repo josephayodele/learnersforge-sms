@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import CCTVModule from "./CCTVModule";
-import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadsheet, getCumulative, getTerms, getClasses, createClass, getSubjects,
+import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadsheet, getCumulative, getTerms, getClasses, createClass, updateClass, deleteClass, getSubjects,
          createSubject, deleteSubject, getClassSubjects, mapClassSubject, unmapClassSubject,
          getAcademicYears, createAcademicYear, setCurrentAcademicYear, setCurrentTerm,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, resetScores, getBehaviour, saveBehaviour, getComments, saveComments,
@@ -2154,6 +2154,10 @@ const ADMIN_ROLES = ["super_admin", "school_admin"];
 // Staff, Fees, HR, Settings, Analytics, etc. — is admin-only.
 const TEACHER_PAGES = new Set(["students","attendance","grades","timetable","cbt","cbt-create","cbt-take","cbt-results","ai-tools"]);
 const TEACHER_HOME = "students";
+// An accountant/bursar manages money, not classes: Fees & Finance is their home,
+// plus the dashboard, student lookup (fee status) and messaging (fee reminders).
+const ACCOUNTANT_PAGES = new Set(["dashboard","fees","students","messaging"]);
+const ACCOUNTANT_HOME = "fees";
 // Recommended school-wide bands (high→low). Shown as placeholder guidance in the
 // school-wide remark inputs and offered via "Load recommended defaults".
 const RECOMMENDED_BANDS = {
@@ -6125,6 +6129,85 @@ const AddClassModal = ({ onClose, onCreated }) => {
   );
 };
 
+// Rename a class (and adjust capacity). Duplicate names are rejected by the API.
+const EditClassModal = ({ cls, onClose, onSaved }) => {
+  const [name, setName]         = useState(cls.name || "");
+  const [capacity, setCapacity] = useState(String(cls.capacity || 40));
+  const [saving, setSaving]     = useState(false);
+  const [error, setError]       = useState(null);
+  const submit = async () => {
+    const nm = name.trim();
+    if (!nm) { setError("Class name is required."); return; }
+    setSaving(true); setError(null);
+    try { await updateClass(cls.id, { name: nm, capacity: Number(capacity) || 40 }); onSaved(); }
+    catch (e) { setError(e?.message || e?.data?.message || "Could not update class."); setSaving(false); }
+  };
+  return (
+    <Modal title="✏️ Edit Class" onClose={saving ? () => {} : onClose} width={440}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
+        <Input label="Class name" value={name} onChange={setName} placeholder="e.g. JSS 3A" style={{ gridColumn:"1 / -1" }}/>
+        <Input label="Capacity" value={capacity} onChange={setCapacity} type="number" placeholder="40"/>
+      </div>
+      {error && <div style={{ marginTop:14, padding:"9px 12px", borderRadius:8, background:C.coralLight, color:C.coral, fontSize:12, fontWeight:600 }}>{error}</div>}
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:18 }}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancel</Btn>
+        <Btn variant="primary" onClick={submit} disabled={saving}>{saving ? "Saving…" : "Save Changes"}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// Delete a class. Confirm first; if students are still assigned, the API returns
+// the count and we require the admin to move them to another class first.
+const DeleteClassModal = ({ cls, classes, onClose, onDeleted }) => {
+  const [count, setCount]   = useState(null);   // null = confirm step; >0 = reassign step
+  const [target, setTarget] = useState("");
+  const [busy, setBusy]     = useState(false);
+  const [error, setError]   = useState(null);
+  const others = (classes || []).filter(c => Number(c.id) !== Number(cls.id));
+  const doDelete = async (reassignTo) => {
+    setBusy(true); setError(null);
+    try { await deleteClass(cls.id, reassignTo || undefined); onDeleted(reassignTo ? count : 0); }
+    catch (e) {
+      const n = e?.data?.students ?? e?.response?.data?.data?.students;
+      if (n != null) setCount(Number(n));   // students block it → switch to reassign step
+      else setError(e?.message || e?.data?.message || "Could not delete class.");
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="🗑 Delete Class" onClose={busy ? () => {} : onClose} width={460}>
+      {count == null ? (
+        <>
+          <div style={{ fontSize:13, color:C.textMid, lineHeight:1.6 }}>
+            Delete <strong>{cls.name}</strong>? This removes the class from active lists, rosters and dropdowns. This cannot be undone from here.
+          </div>
+          {error && <div style={{ marginTop:12, padding:"9px 12px", borderRadius:8, background:C.coralLight, color:C.coral, fontSize:12, fontWeight:600 }}>{error}</div>}
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:18 }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn variant="danger" onClick={() => doDelete()} disabled={busy}>{busy ? "Deleting…" : "Delete class"}</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize:13, color:C.textMid, lineHeight:1.6 }}>
+            <strong>{cls.name}</strong> still has <strong>{count}</strong> student{count===1?"":"s"} assigned. Move {count===1?"the student":"all of them"} to another class first — they'll be reassigned and then this class is deleted.
+          </div>
+          <div style={{ marginTop:14 }}>
+            <Sel label="Move students to" value={target} onChange={setTarget}
+                 options={[{ value:"", label: others.length ? "Select a class…" : "No other class — create one first" }, ...others.map(c => ({ value:String(c.id), label:c.name }))]}/>
+          </div>
+          {error && <div style={{ marginTop:12, padding:"9px 12px", borderRadius:8, background:C.coralLight, color:C.coral, fontSize:12, fontWeight:600 }}>{error}</div>}
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:18 }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn variant="danger" onClick={() => target && doDelete(Number(target))} disabled={busy || !target}>{busy ? "Working…" : `Move ${count} & delete`}</Btn>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+};
+
 // Manage which subjects a class offers. Mapping a subject adds it to the class's
 // curriculum; unmapping removes it AND clears any scores it has in the class, so
 // it disappears from that class's report cards and broadsheet.
@@ -6222,6 +6305,10 @@ const AcademicMgmt = () => {
   const [subjSaving, setSubjSaving] = useState(false);
   const [subjErr, setSubjErr] = useState(null);
   const [manageClass, setManageClass] = useState(null);   // class whose subjects we're editing
+  const [editClass, setEditClass] = useState(null);       // class being renamed
+  const [delClass, setDelClass] = useState(null);         // class being deleted (reassign flow)
+  const [classToast, setClassToast] = useState("");
+  const flashClass = m => { setClassToast(m); setTimeout(() => setClassToast(""), 2800); };
 
   useEffect(() => {
     let cancelled = false;
@@ -6294,6 +6381,10 @@ const AcademicMgmt = () => {
                     <div style={{fontSize:12,fontWeight:700}}>{cls.name}</div>
                     <div style={{fontSize:10,color:C.textMuted,marginTop:3}}>Capacity {cls.capacity||40}</div>
                     <div style={{fontSize:10,color:C.accentDark,marginTop:4,fontWeight:600}}>📖 Manage subjects</div>
+                    <div style={{display:"flex",gap:6,justifyContent:"center",marginTop:7}} onClick={e=>e.stopPropagation()}>
+                      <button onClick={()=>setEditClass(cls)} title="Rename this class" style={{fontSize:10,fontWeight:700,color:C.accentDark,background:"#fff",border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",cursor:"pointer"}}>✏️ Edit</button>
+                      <button onClick={()=>setDelClass(cls)} title="Delete this class" style={{fontSize:10,fontWeight:700,color:C.coral,background:"#fff",border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",cursor:"pointer"}}>🗑 Delete</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -6410,6 +6501,17 @@ const AcademicMgmt = () => {
       {manageClass && (
         <ClassSubjectsModal cls={manageClass} allSubjects={subjectRows} onClose={()=>setManageClass(null)}/>
       )}
+      {editClass && (
+        <EditClassModal cls={editClass}
+          onClose={()=>setEditClass(null)}
+          onSaved={()=>{ setEditClass(null); flashClass("Class updated."); setClassReload(k=>k+1); }}/>
+      )}
+      {delClass && (
+        <DeleteClassModal cls={delClass} classes={classList}
+          onClose={()=>setDelClass(null)}
+          onDeleted={(moved)=>{ setDelClass(null); flashClass(moved ? `Moved ${moved} student${moved===1?"":"s"} & deleted the class.` : "Class deleted."); setClassReload(k=>k+1); }}/>
+      )}
+      {classToast && <div style={{position:"fixed",bottom:26,right:26,zIndex:2000,background:C.navy,color:"#fff",padding:"11px 18px",borderRadius:11,fontSize:12,fontWeight:600,boxShadow:"0 8px 28px rgba(0,0,0,.2)",borderLeft:`4px solid ${C.accent}`}}>{classToast}</div>}
 
       {matModal&&<Modal title="📎 Upload Study Material" onClose={()=>setMatModal(false)} width={500}>
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -8685,8 +8787,11 @@ export default function App() {
   // Restricted = known non-admin staff (teacher/accountant). Students/parents are
   // routed to the portal earlier, so they never reach here.
   const restricted = !!me && !ADMIN_ROLES.includes(me.role);
-  const allow = p => !restricted || TEACHER_PAGES.has(p);
-  const go = p => { setExamId(null); setPage(allow(p) ? p : TEACHER_HOME); };
+  const isAccountant = me?.role === "accountant";
+  const restrictedPages = isAccountant ? ACCOUNTANT_PAGES : TEACHER_PAGES;
+  const restrictedHome  = isAccountant ? ACCOUNTANT_HOME : TEACHER_HOME;
+  const allow = p => !restricted || restrictedPages.has(p);
+  const go = p => { setExamId(null); setPage(allow(p) ? p : restrictedHome); };
   const handleNav = p => { setMobileNav(false); go(p); };   // sidebar/topbar nav also closes the mobile drawer
   const openExam = id => { setExamId(id); setPage("cbt-take"); };
   const openResults = id => { setExamId(id); setPage("cbt-results"); };
@@ -8768,12 +8873,12 @@ export default function App() {
     <>
       <style>{G}</style>
       {(() => {
-        const activePage = allow(page) ? page : TEACHER_HOME;   // never render a page the role can't see
+        const activePage = allow(page) ? page : restrictedHome;   // never render a page the role can't see
         return (
       <div style={{ display:"flex", minHeight:"100vh" }}>
         <Sidebar active={activePage} onNav={handleNav} collapsed={collapsed} setCollapsed={setCollapsed} school={school}
                  isMobile={isMobile} mobileOpen={mobileNav} onClose={()=>setMobileNav(false)}
-                 allowed={restricted ? TEACHER_PAGES : null}/>
+                 allowed={restricted ? restrictedPages : null}/>
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
           <Topbar page={activePage} onNav={handleNav} onLogout={handleLogout} school={school} user={me}
                   isMobile={isMobile} onMenu={()=>setMobileNav(true)}/>
