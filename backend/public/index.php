@@ -609,6 +609,13 @@ try {
         DB::run('UPDATE classes SET deleted_at=NOW() WHERE id=? AND school_id=?', [$id, $sid]);
         respond(['deleted' => true, 'moved' => ($count && $reassignTo) ? $count : 0], 200, 'Class deleted');
 
+    // ── Bulk class promotion ──────────────────────────────────────────────────
+    } elseif ($path === '/api/v1/promotions/preview' && $method === 'GET') {
+        PromotionController::preview(authGuard());
+
+    } elseif ($path === '/api/v1/promotions/bulk' && $method === 'POST') {
+        PromotionController::bulk(authGuard());
+
     } elseif ($path === '/api/v1/subjects' && !$id && $method === 'GET') {
         respond(DB::query(
             'SELECT * FROM subjects WHERE school_id = ? AND deleted_at IS NULL ORDER BY name',

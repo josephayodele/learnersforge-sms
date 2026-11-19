@@ -2404,6 +2404,101 @@ class SettingsController {
     }
 }
 
+// ─── PromotionController ──────────────────────────────────────────────────────
+// Bulk class promotion: move every student whose average meets a threshold from
+// one class into another. Eligibility is based either on a single term's overall
+// percentage, or on the average across every term in the class's academic session.
+class PromotionController {
+    // Each student's eligibility average for a class, using the SAME rule as the
+    // broadsheet: a term's % = (sum of subject totals) / (offered subjects × 100);
+    // a session average is the mean of those per-term %s. average is null when the
+    // student has no scores in any of the counted terms.
+    // Returns ['students'=>[{id,name,average|null}], 'terms'=>[ids], 'term_id'=>int|null, 'basis'=>str].
+    private static function classAverages(int $schoolId, int $classId, string $basis, int $termId): array {
+        $cls  = DB::one('SELECT academic_year_id FROM classes WHERE id=? AND school_id=? AND deleted_at IS NULL', [$classId, $schoolId]);
+        $ayId = (int)($cls['academic_year_id'] ?? 0);
+        if ($basis === 'session') {
+            $terms  = $ayId ? array_map(fn($t) => (int)$t['id'], DB::query('SELECT id FROM terms WHERE academic_year_id=? ORDER BY id', [$ayId])) : [];
+            $termId = 0;
+        } else {
+            if (!$termId && $ayId) {
+                $cur = DB::one('SELECT id FROM terms WHERE academic_year_id=? ORDER BY is_current DESC, id DESC LIMIT 1', [$ayId]);
+                $termId = (int)($cur['id'] ?? 0);
+            }
+            $terms = $termId ? [$termId] : [];
+        }
+        $students = DB::query('SELECT s.id, u.first_name, u.last_name FROM students s JOIN users u ON u.id=s.user_id WHERE s.class_id=? AND s.deleted_at IS NULL ORDER BY u.last_name, u.first_name', [$classId]);
+        $avgByStudent = [];
+        if ($terms) {
+            $ph   = implode(',', array_fill(0, count($terms), '?'));
+            $rows = DB::query("SELECT g.student_id, g.subject_id, g.term_id, g.score FROM grades g JOIN students s ON s.id=g.student_id WHERE s.class_id=? AND g.term_id IN($ph) AND s.deleted_at IS NULL", array_merge([$classId], $terms));
+            $agg = [];
+            foreach ($rows as $r) {
+                $st = (int)$r['student_id']; $tm = (int)$r['term_id']; $su = (int)$r['subject_id'];
+                $agg[$st][$tm][$su] = ($agg[$st][$tm][$su] ?? 0) + (float)$r['score'];
+            }
+            foreach ($agg as $st => $byTerm) {
+                $pcts = [];
+                foreach ($terms as $tm) {
+                    if (empty($byTerm[$tm])) continue;
+                    $sum = array_sum($byTerm[$tm]); $possible = count($byTerm[$tm]) * 100;
+                    if ($possible > 0) $pcts[] = ($sum / $possible) * 100;
+                }
+                if ($pcts) $avgByStudent[$st] = round(array_sum($pcts) / count($pcts), 2);
+            }
+        }
+        $out = [];
+        foreach ($students as $s) {
+            $st = (int)$s['id'];
+            $out[] = ['id' => $st, 'name' => trim($s['first_name'].' '.$s['last_name']), 'average' => $avgByStudent[$st] ?? null];
+        }
+        return ['students' => $out, 'terms' => $terms, 'term_id' => $termId ?: null, 'basis' => $basis];
+    }
+
+    // GET /promotions/preview?from_class_id=&basis=&term_id= — per-student averages
+    // (the UI applies the minimum-score threshold live, with no re-fetch).
+    public static function preview(array $user): void {
+        if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can preview promotions.');
+        $classId = (int)($_GET['from_class_id'] ?? 0);
+        if (!$classId) respond(null, 422, 'from_class_id is required.');
+        $basis  = (($_GET['basis'] ?? 'term') === 'session') ? 'session' : 'term';
+        $termId = (int)($_GET['term_id'] ?? 0);
+        if (!DB::one('SELECT id FROM classes WHERE id=? AND school_id=? AND deleted_at IS NULL', [$classId, (int)$user['school_id']]))
+            respond(null, 404, 'Class not found.');
+        respond(self::classAverages((int)$user['school_id'], $classId, $basis, $termId));
+    }
+
+    // POST /promotions/bulk {from_class_id,to_class_id,min_score,basis,term_id} —
+    // recomputes averages server-side and moves eligible students to the target
+    // class. A missing average counts as 0, so min_score 0 promotes everyone.
+    public static function bulk(array $user): void {
+        if (!Perm::isAdmin($user)) respond(null, 403, 'Only an administrator can promote students.');
+        $b      = body();
+        $sid    = (int)$user['school_id'];
+        $from   = (int)($b['from_class_id'] ?? 0);
+        $to     = (int)($b['to_class_id'] ?? 0);
+        $min    = (float)($b['min_score'] ?? 0);
+        $basis  = (($b['basis'] ?? 'term') === 'session') ? 'session' : 'term';
+        $termId = (int)($b['term_id'] ?? 0);
+        if (!$from || !$to) respond(null, 422, 'from_class_id and to_class_id are required.');
+        if ($from === $to)  respond(null, 422, 'The target class must be different from the source class.');
+        foreach ([$from, $to] as $cid)
+            if (!DB::one('SELECT id FROM classes WHERE id=? AND school_id=? AND deleted_at IS NULL', [$cid, $sid]))
+                respond(null, 404, 'Class not found.');
+        $data     = self::classAverages($sid, $from, $basis, $termId);
+        $eligible = []; $held = 0;
+        foreach ($data['students'] as $s) {
+            if (((float)($s['average'] ?? 0)) >= $min) $eligible[] = (int)$s['id'];
+            else $held++;
+        }
+        if ($eligible) {
+            $ph = implode(',', array_fill(0, count($eligible), '?'));
+            DB::run("UPDATE students SET class_id=? WHERE class_id=? AND id IN($ph) AND deleted_at IS NULL", array_merge([$to, $from], $eligible));
+        }
+        respond(['promoted' => count($eligible), 'held_back' => $held, 'moved_ids' => $eligible, 'total' => count($data['students'])]);
+    }
+}
+
 // ─── AcademicController ───────────────────────────────────────────────────────
 // Academic sessions (years) and their terms. A school needs at least one session
 // before classes, grades or attendance can be created.

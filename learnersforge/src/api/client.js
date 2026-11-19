@@ -259,6 +259,12 @@ export const unmapClassSubject = (class_id, subject_id) => api.delete('/class-su
 export const getTerms    = () => api.get('/terms');
 export const setCurrentTerm = id => api.put(`/terms/${id}`, {});
 
+// ── Promotions (bulk class promotion) ───────────────────────────────────────────
+// basis: 'term' (one term's overall %) or 'session' (average across the session's terms).
+export const getPromotionPreview = (from_class_id, basis = 'term', term_id) =>
+  api.get('/promotions/preview', { params: { from_class_id, basis, ...(term_id ? { term_id } : {}) } });
+export const bulkPromote = data => api.post('/promotions/bulk', data);
+
 // ── Academic sessions (years) + terms ───────────────────────────────────────────
 export const getAcademicYears     = () => api.get('/academic-years');
 export const createAcademicYear   = data => api.post('/academic-years', data);

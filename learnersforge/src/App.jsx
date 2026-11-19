@@ -5,6 +5,7 @@ import CCTVModule from "./CCTVModule";
 import { getStudents, getDashboard, getReportCard, emailReportCards, getBroadsheet, getCumulative, getTerms, getClasses, createClass, updateClass, deleteClass, getSubjects,
          createSubject, deleteSubject, getClassSubjects, mapClassSubject, unmapClassSubject,
          getAcademicYears, createAcademicYear, setCurrentAcademicYear, setCurrentTerm,
+         getPromotionPreview, bulkPromote,
          getCaTypes, getCaTypesAll, saveCaTypes, getGrades, submitGrades, resetScores, getBehaviour, saveBehaviour, getComments, saveComments,
          createExam, createStudent, getStudent, updateStudent, importStudents, deleteStudent, bulkDeleteStudents, getSchoolSettings, updateSchoolSettings,
          getRemarkRanges, createRemarkRange, updateRemarkRange, deleteRemarkRange, getMe, getMyAssignments,
@@ -1229,9 +1230,9 @@ const Students = () => {
   }
   return (
     <div className="fi">
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:10}}>
-        <Input value={searchInput} onChange={setSearchInput} placeholder="🔍 Search name or ID…" style={{width:250}}/>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:10,flexWrap:"wrap"}}>
+        <Input value={searchInput} onChange={setSearchInput} placeholder="🔍 Search name or ID…" style={{flex:"1 1 220px",minWidth:160,maxWidth:320}}/>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
           <div style={{position:"relative"}}>
             <Btn variant="secondary" onClick={()=>setExportOpen(o=>!o)} disabled={exporting}>{exporting?"Exporting…":"⬇ Export ▾"}</Btn>
             {exportOpen && (<>
@@ -5882,6 +5883,92 @@ const Settings = () => {
 // NEW MODULES FROM PROPOSAL GAP ANALYSIS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Real bulk class promotion. Loads the school's classes + terms, previews each
+// student's average for the chosen basis (one term, or the whole session), applies
+// the minimum-score threshold live, and moves eligible students on confirm.
+const BulkPromoteModal = ({ onClose, onDone }) => {
+  const [classes, setClasses]       = useState([]);
+  const [terms, setTerms]           = useState([]);
+  const [from, setFrom]             = useState("");
+  const [to, setTo]                 = useState("");
+  const [min, setMin]               = useState("50");
+  const [basis, setBasis]           = useState("term");
+  const [termId, setTermId]         = useState("");
+  const [rows, setRows]             = useState(null);   // preview: [{id,name,average|null}]
+  const [loading, setLoading]       = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]           = useState(null);
+  const [done, setDone]             = useState(null);   // {promoted, held_back}
+
+  useEffect(() => {
+    getClasses().then(r => { const l = arrOf(r); setClasses(l); if (l[0]) setFrom(String(l[0].id)); if (l[1]) setTo(String(l[1].id)); }).catch(() => {});
+    getTerms().then(r => { const l = arrOf(r); setTerms(l); const cur = l.find(t => Number(t.is_current) === 1) || l[l.length - 1]; if (cur) setTermId(String(cur.id)); }).catch(() => {});
+  }, []);
+
+  // Re-preview whenever the source class / basis / term changes.
+  useEffect(() => {
+    if (!from) { setRows(null); return; }
+    let live = true; setLoading(true); setError(null);
+    getPromotionPreview(Number(from), basis, basis === "term" && termId ? Number(termId) : undefined)
+      .then(r => { if (live) setRows(arrOf(r, "students")); })
+      .catch(e => { if (live) { setRows([]); setError(e?.message || e?.error || "Could not load class scores."); } })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [from, basis, termId]);
+
+  const minN     = Number(min) || 0;
+  const eligible = (rows || []).filter(s => Number(s.average ?? 0) >= minN);
+  const heldBack = (rows || []).length - eligible.length;
+  const clsName  = id => (classes.find(c => String(c.id) === String(id)) || {}).name || "the target class";
+
+  const confirm = async () => {
+    setError(null);
+    if (!from || !to) { setError("Choose both a source and a target class."); return; }
+    if (String(from) === String(to)) { setError("The target class must be different from the source class."); return; }
+    setSubmitting(true);
+    try {
+      const res = await bulkPromote({ from_class_id: Number(from), to_class_id: Number(to), min_score: minN, basis, term_id: basis === "term" && termId ? Number(termId) : undefined });
+      const d = res?.data ?? res;
+      setDone({ promoted: d.promoted ?? eligible.length, held_back: d.held_back ?? heldBack });
+      onDone?.();
+    } catch (e) {
+      setError(e?.message || e?.error || "Promotion failed.");
+    } finally { setSubmitting(false); }
+  };
+
+  return (
+    <Modal title="🎓 Bulk Class Promotion" onClose={onClose} width={480}>
+      {done ? (
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          <div style={{ padding:"14px", borderRadius:10, background:C.accentLight, fontSize:13, color:C.accentDark, fontWeight:600 }}>
+            ✅ Promoted <strong>{done.promoted}</strong> student{done.promoted === 1 ? "" : "s"} to {clsName(to)}. <strong>{done.held_back}</strong> held back.
+          </div>
+          <div style={{ display:"flex", justifyContent:"flex-end" }}><Btn variant="primary" onClick={onClose}>Done</Btn></div>
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
+          <div style={{ padding:"11px 14px", borderRadius:10, background:C.amberLight, fontSize:12, color:"#92400E", fontWeight:600 }}>⚠️ This moves every eligible student from the source class into the target class. Students below the minimum stay where they are.</div>
+          <Sel label="From Class" value={from} onChange={setFrom} options={classes.map(c => ({ value:String(c.id), label:c.name }))}/>
+          <Sel label="To Class"   value={to}   onChange={setTo}   options={classes.map(c => ({ value:String(c.id), label:c.name }))}/>
+          <Sel label="Eligibility based on" value={basis} onChange={setBasis} options={[{ value:"term", label:"A single term's average" }, { value:"session", label:"Whole session (average of all terms)" }]}/>
+          {basis === "term" && <Sel label="Term" value={termId} onChange={setTermId} options={terms.map(t => ({ value:String(t.id), label:(t.name || ("Term " + t.id)) + (Number(t.is_current) === 1 ? " (current)" : "") }))}/>}
+          <Input label="Minimum Average Score for Promotion (%)" value={min} onChange={setMin} type="number"/>
+          <div style={{ padding:"11px 14px", borderRadius:10, background:C.accentLight, fontSize:12, color:C.accentDark }}>
+            {loading ? "Calculating eligibility…"
+              : rows ? <>✅ <strong>{eligible.length} student{eligible.length === 1 ? "" : "s"}</strong> eligible for promotion · <strong>{heldBack} student{heldBack === 1 ? "" : "s"}</strong> will be held back</>
+              : "Select a source class to see eligibility."}
+          </div>
+          {error && <div style={{ padding:"9px 12px", borderRadius:8, background:C.coralLight, color:C.coral, fontSize:12, fontWeight:600 }}>{error}</div>}
+          <div style={{ display:"flex", gap:9, justifyContent:"flex-end" }}>
+            <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+            <Btn variant="primary" disabled={submitting || loading || !from || !to || String(from) === String(to) || eligible.length === 0} onClick={confirm}>{submitting ? "Promoting…" : `🎓 Promote ${eligible.length} student${eligible.length === 1 ? "" : "s"}`}</Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+};
+
 const StudentExtras = () => {
   const [tab, setTab] = useState("docs");
   const [incidentModal, setIncidentModal] = useState(false);
@@ -6017,16 +6104,7 @@ const StudentExtras = () => {
         </div>
       </Modal>}
 
-      {promoteModal&&<Modal title="🎓 Bulk Class Promotion" onClose={()=>setPromoteModal(false)} width={480}>
-        <div style={{display:"flex",flexDirection:"column",gap:13}}>
-          <div style={{padding:"11px 14px",borderRadius:10,background:C.amberLight,fontSize:12,color:"#92400E",fontWeight:600}}>⚠️ This will promote ALL eligible students in the selected class to the next class.</div>
-          <Sel label="From Class" value="JSS 2A" onChange={()=>{}} options={CLASSES.map(c=>({value:c,label:c}))}/>
-          <Sel label="To Class"   value="JSS 3A" onChange={()=>{}} options={CLASSES.map(c=>({value:c,label:c}))}/>
-          <Input label="Minimum Average Score for Promotion (%)" value="50" onChange={()=>{}} type="number"/>
-          <div style={{padding:"11px 14px",borderRadius:10,background:C.accentLight,fontSize:12,color:C.accentDark}}>✅ <strong>3 students</strong> eligible for promotion · <strong>1 student</strong> will be held back</div>
-          <div style={{display:"flex",gap:9,justifyContent:"flex-end"}}><Btn variant="secondary" onClick={()=>setPromoteModal(false)}>Cancel</Btn><Btn variant="primary" onClick={()=>setPromoteModal(false)}>🎓 Confirm Promotion</Btn></div>
-        </div>
-      </Modal>}
+      {promoteModal && <BulkPromoteModal onClose={() => setPromoteModal(false)} />}
     </div>
   );
 };
