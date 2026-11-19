@@ -8644,7 +8644,9 @@ const StudentPortal = ({ user, school, onLogout }) => {
       if (!qs.length) { flash("This exam has no questions yet."); return; }
       setActive({ ...d, questions: qs });
       setAnswers({}); setCurrent(0); setResult(null);
-      setTimeLeft((Number(d?.duration)||60)*60);
+      // Prefer the server's remaining time (resumes the real countdown on reopen);
+      // fall back to full duration only when the server doesn't enforce timing.
+      setTimeLeft(d?.remaining_seconds != null ? Math.max(0, Number(d.remaining_seconds)) : (Number(d?.duration)||60)*60);
       setView("take");
     } catch (e) { flash(e?.message || e?.data?.message || "Could not open this exam."); }
   };

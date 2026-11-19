@@ -1629,6 +1629,9 @@ class ExamController {
         $exam = DB::one('SELECT * FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
         if (!$exam) respond(null, 404, 'Exam not found');
         self::assertCanGrade($user, $exam);
+        // Close any expired, unsubmitted attempts first so students who started but
+        // ran out of time appear here as recorded (auto-submitted) results.
+        StudentPortalController::sweepExpiredAttempts($examId);
         $meta = DB::one('SELECT e.id,e.title,e.exam_type,e.total_marks,e.show_score,e.results_released,c.name AS class_name,sub.name AS subject_name
                          FROM exams e JOIN classes c ON c.id=e.class_id JOIN subjects sub ON sub.id=e.subject_id WHERE e.id=?', [$examId]);
         $meta['has_subjective'] = (bool)DB::one('SELECT 1 x FROM exam_questions WHERE exam_id=? AND type IN ("short","essay","fill") LIMIT 1', [$examId]);
@@ -2684,6 +2687,79 @@ class StudentPortalController {
         return (int)($exam['show_score'] ?? 0) === 1 || (int)($exam['results_released'] ?? 0) === 1;
     }
 
+    // ── Exam timing (server-authoritative) ──────────────────────────────────────
+    // Students are trusted for nothing time-related. The server records when each
+    // attempt started (exam_attempts, migration 018), derives the deadline from the
+    // exam's duration, enforces it at submit, and auto-closes expired attempts so a
+    // result is always recorded. A short grace window absorbs network latency. Every
+    // DB touch is wrapped so that a DB not yet carrying migration 018 simply falls
+    // back to the old, un-enforced behaviour instead of 500-ing.
+    private const EXAM_GRACE = 60;   // seconds past the deadline still accepted
+
+    // This student's recorded start, or null if they haven't started / the table
+    // isn't migrated yet (null ⇒ enforcement is skipped for this request).
+    private static function attemptStart(int $examId, int $studentId): ?string {
+        try { $a = DB::one('SELECT started_at FROM exam_attempts WHERE exam_id=? AND student_id=?', [$examId, $studentId]); return $a['started_at'] ?? null; }
+        catch (\Throwable $e) { return null; }
+    }
+
+    // Record the start on first fetch (idempotent) and return the authoritative
+    // started_at. Null ⇒ exam_attempts not migrated ⇒ no enforcement.
+    private static function ensureAttempt(int $examId, int $studentId): ?string {
+        try {
+            $a = DB::one('SELECT started_at FROM exam_attempts WHERE exam_id=? AND student_id=?', [$examId, $studentId]);
+            if ($a) return $a['started_at'];
+            try { DB::exec('INSERT INTO exam_attempts (exam_id,student_id,started_at) VALUES (?,?,NOW())', [$examId, $studentId]); }
+            catch (\Throwable $e) { /* race: created by a concurrent fetch */ }
+            $a = DB::one('SELECT started_at FROM exam_attempts WHERE exam_id=? AND student_id=?', [$examId, $studentId]);
+            return $a['started_at'] ?? null;
+        } catch (\Throwable $e) { return null; }
+    }
+
+    // Unix deadline for an attempt: started_at + duration (minutes), capped by the
+    // exam's scheduled end_time if one is set. Null = no limit (duration 0/absent
+    // or no recorded start).
+    private static function examDeadline(array $exam, ?string $startedAt): ?int {
+        if ($startedAt === null) return null;
+        $dur = (int)($exam['duration'] ?? 0);
+        if ($dur <= 0) return null;
+        $deadline = strtotime($startedAt) + $dur * 60;
+        if (!empty($exam['end_time'])) { $et = strtotime((string)$exam['end_time']); if ($et && $et < $deadline) $deadline = $et; }
+        return $deadline;
+    }
+
+    // Record a zero/empty submission for an expired, unsubmitted attempt so a result
+    // always exists. No-op if already submitted or pre-migration; safe to call twice
+    // (the unique key on exam_id+student_id guards a double close).
+    private static function finalizeExpiredAttempt(int $examId, int $studentId): void {
+        try {
+            if (DB::one('SELECT id FROM exam_submissions WHERE exam_id=? AND student_id=?', [$examId, $studentId])) return;
+            $questions = DB::query('SELECT type,marks FROM exam_questions WHERE exam_id=?', [$examId]);
+            $maxTotal = 0.0; $needsReview = 0;
+            foreach ($questions as $q) { $maxTotal += (int)$q['marks']; if (!in_array($q['type'], ['mcq','tf'], true)) $needsReview = 1; }
+            DB::exec('INSERT INTO exam_submissions (exam_id,student_id,answers,score,max_score,needs_review,submitted_at,time_taken,auto_submitted) VALUES (?,?,?,?,?,?,NOW(),0,1)',
+                [$examId, $studentId, json_encode(new \stdClass()), 0.0, $maxTotal, $needsReview]);
+        } catch (\Throwable $e) { /* already recorded, or pre-migration */ }
+    }
+
+    // Teacher-side sweep: close every expired, unsubmitted attempt for one exam so
+    // students who started but never submitted show up as recorded results by the
+    // time grading happens. Tolerant of a pre-018 DB.
+    public static function sweepExpiredAttempts(int $examId): void {
+        try {
+            $exam = DB::one('SELECT id,duration,end_time FROM exams WHERE id=?', [$examId]);
+            if (!$exam) return;
+            $open = DB::query(
+                'SELECT a.student_id, a.started_at FROM exam_attempts a
+                 LEFT JOIN exam_submissions es ON es.exam_id=a.exam_id AND es.student_id=a.student_id
+                 WHERE a.exam_id=? AND es.id IS NULL', [$examId]);
+            foreach ($open as $at) {
+                $deadline = self::examDeadline($exam, $at['started_at']);
+                if ($deadline !== null && time() > $deadline + self::EXAM_GRACE) self::finalizeExpiredAttempt($examId, (int)$at['student_id']);
+            }
+        } catch (\Throwable $e) { /* exam_attempts not migrated yet */ }
+    }
+
     // Exams available to this student's class, with their submission state.
     public static function myExams(array $user): void {
         $s = self::me($user);
@@ -2706,16 +2782,32 @@ class StudentPortalController {
         respond($rows);
     }
 
-    // An exam to take: questions WITHOUT answers. Blocks re-takes.
+    // An exam to take: questions WITHOUT answers. Blocks re-takes, records the
+    // authoritative start on first fetch, and refuses to re-serve an expired attempt.
     public static function takeExam(array $user, int $examId): void {
         $s = self::me($user);
-        $exam = DB::one('SELECT id,title,duration,total_marks,class_id,status,show_score,results_released FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
+        $exam = DB::one('SELECT id,title,duration,total_marks,class_id,status,show_score,results_released,end_time FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
         if (!$exam || (int)$exam['class_id'] !== (int)$s['class_id']) respond(null, 404, 'Exam not found for your class.');
         if ($exam['status'] !== 'active') respond(null, 403, 'This exam is not open.');
         $existing = DB::one('SELECT id FROM exam_submissions WHERE exam_id=? AND student_id=?', [$examId, $s['id']]);
         if ($existing) respond(null, 409, 'You have already submitted this exam.');
-        // Strip the answer column — never send correct answers to the client.
-        $exam['questions'] = DB::query('SELECT id,type,question,options,marks,sort_order FROM exam_questions WHERE exam_id=? ORDER BY sort_order', [$examId]);
+
+        // Server-authoritative start: recorded once, reused on every later fetch so
+        // reopening resumes the same countdown instead of handing out fresh time.
+        $startedAt = self::ensureAttempt($examId, (int)$s['id']);
+        $deadline  = self::examDeadline($exam, $startedAt);
+        if ($deadline !== null && time() > $deadline + self::EXAM_GRACE) {
+            self::finalizeExpiredAttempt($examId, (int)$s['id']);   // close it + record the result
+            respond(null, 403, 'Your time for this exam has ended.');
+        }
+
+        // Strip the answer column — never send correct answers to the client. Hand
+        // the client the server's clock + real remaining time so its timer is honest.
+        $exam['questions']         = DB::query('SELECT id,type,question,options,marks,sort_order FROM exam_questions WHERE exam_id=? ORDER BY sort_order', [$examId]);
+        $exam['started_at']        = $startedAt;
+        $exam['server_time']       = date('Y-m-d H:i:s');
+        $exam['deadline']          = $deadline !== null ? date('Y-m-d H:i:s', $deadline) : null;
+        $exam['remaining_seconds'] = $deadline !== null ? max(0, $deadline - time()) : null;
         respond($exam);
     }
 
@@ -2725,10 +2817,21 @@ class StudentPortalController {
         $examId  = (int)($b['exam_id'] ?? 0);
         $answers = $b['answers'] ?? [];              // { question_id: value }
         $timeTaken = (int)($b['time_taken'] ?? 0);
-        $exam = DB::one('SELECT id,class_id,status,show_score,results_released FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
+        $exam = DB::one('SELECT id,class_id,status,show_score,results_released,duration,end_time FROM exams WHERE id=? AND school_id=?', [$examId, (int)$user['school_id']]);
         if (!$exam || (int)$exam['class_id'] !== (int)$s['class_id']) respond(null, 404, 'Exam not found for your class.');
         if (DB::one('SELECT id FROM exam_submissions WHERE exam_id=? AND student_id=?', [$examId, $s['id']])) {
             respond(null, 409, 'You have already submitted this exam.');
+        }
+
+        // Server-authoritative deadline: reject a submission that arrives after the
+        // student's own window (+ grace) and auto-close the attempt so a result still
+        // exists. Skipped when no start was recorded (pre-migration / never fetched),
+        // since there's then no trustworthy anchor to measure lateness against.
+        $startedAt = self::attemptStart($examId, (int)$s['id']);
+        $deadline  = self::examDeadline($exam, $startedAt);
+        if ($deadline !== null && time() > $deadline + self::EXAM_GRACE) {
+            self::finalizeExpiredAttempt($examId, (int)$s['id']);
+            respond(null, 403, 'Your time for this exam has ended; this submission was not accepted.');
         }
 
         $questions = DB::query('SELECT id,type,options,answer,marks FROM exam_questions WHERE exam_id=?', [$examId]);
@@ -2741,8 +2844,14 @@ class StudentPortalController {
                 $needsReview = 1;   // short/essay/fill need manual grading
             }
         }
-        DB::exec('INSERT INTO exam_submissions (exam_id,student_id,answers,score,max_score,needs_review,submitted_at,time_taken) VALUES (?,?,?,?,?,?,NOW(),?)',
-            [$examId, $s['id'], json_encode($answers), $auto, $maxTotal, $needsReview, $timeTaken]);
+        try {
+            DB::exec('INSERT INTO exam_submissions (exam_id,student_id,answers,score,max_score,needs_review,submitted_at,time_taken) VALUES (?,?,?,?,?,?,NOW(),?)',
+                [$examId, $s['id'], json_encode($answers), $auto, $maxTotal, $needsReview, $timeTaken]);
+        } catch (\Throwable $e) {
+            // Lost a race with a concurrent submit or an auto-close (unique key on
+            // exam_id+student_id) — treat as a clean duplicate, not a 500.
+            respond(null, 409, 'You have already submitted this exam.');
+        }
 
         $visible = self::scoreVisible($exam);
         respond([
