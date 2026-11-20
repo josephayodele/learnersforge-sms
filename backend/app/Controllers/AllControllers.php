@@ -92,11 +92,11 @@ class StudentController {
         $dir = strtolower($_GET['dir'] ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
         switch ($_GET['sort'] ?? 'name') {
             case 'id':    $orderBy = "s.student_id $dir"; break;
-            case 'class': $orderBy = "c.name $dir, u.last_name ASC, u.first_name ASC"; break;
+            case 'class': $orderBy = "c.name $dir, u.first_name ASC, u.last_name ASC"; break;
             case 'email': $orderBy = "u.email $dir"; break;
-            case 'gender': $orderBy = "u.gender $dir, u.last_name ASC, u.first_name ASC"; break;
+            case 'gender': $orderBy = "u.gender $dir, u.first_name ASC, u.last_name ASC"; break;
             case 'name':
-            default:      $orderBy = "u.last_name $dir, u.first_name $dir"; break;
+            default:      $orderBy = "u.first_name $dir, u.last_name $dir"; break;
         }
         $sql = 'SELECT s.id, s.student_id, s.admission_date, s.guardian_name, s.guardian_phone, s.guardian_email,
                        u.first_name, u.last_name, u.email, u.phone, u.gender, u.date_of_birth,
